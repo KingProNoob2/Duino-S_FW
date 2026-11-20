@@ -1,0 +1,118 @@
+// Portable, transport-agnostic MaraProt v1 protocol parser and dispatcher.
+// Works identically over USB CDC, TCP/IP, and RS-485 via ProtTransport_t.
+
+#ifndef MARA_PROT_H
+#define MARA_PROT_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "mara_vm.h"
+#include <stdbool.h>
+#include <stdint.h>
+
+#define PROT_MAGIC_0               0x4DU
+#define PROT_MAGIC_1               0x50U
+#define PROT_VERSION_1             0x10U
+#define PROT_FLAG_RESPONSE         0x01U
+#define PROT_FLAG_ERROR            0x02U
+#define PROT_HEADER_BYTES          10U
+#define PROT_CRC_BYTES             2U
+#define PROT_OVERHEAD_BYTES        (PROT_HEADER_BYTES + PROT_CRC_BYTES)
+#define PROT_MAX_PAYLOAD_BYTES     520U
+#define PROT_MAX_FRAME_BYTES       (PROT_OVERHEAD_BYTES + PROT_MAX_PAYLOAD_BYTES)
+#define PROT_MAX_WATCH_SLOTS       128U
+#define PROT_STATION_P2P           0x00U
+#define PROT_STATION_BROADCAST     0xFFU
+#define PROT_DFU_MAGIC             0xDF00B007U
+
+typedef enum {
+    PROT_STATUS_OK = 0,
+    PROT_STATUS_ERR_CRC,
+    PROT_STATUS_ERR_OPCODE,
+    PROT_STATUS_ERR_PARAM,
+    PROT_STATUS_ERR_BUSY,
+    PROT_STATUS_ERR_STATE,
+    PROT_STATUS_ERR_STORAGE
+} ProtStatus_t;
+
+typedef enum {
+    PROT_OP_PING             = 0x01,
+    PROT_OP_GET_INFO         = 0x02,
+    PROT_OP_VM_STATUS        = 0x10,
+    PROT_OP_VM_CONTROL       = 0x11,
+    PROT_OP_VM_UPLOAD_BEGIN  = 0x20,
+    PROT_OP_VM_UPLOAD_CHUNK  = 0x21,
+    PROT_OP_VM_UPLOAD_COMMIT = 0x22,
+    PROT_OP_WATCH_SUBSCRIBE  = 0x30,
+    PROT_OP_WATCH_POLL       = 0x31,
+    PROT_OP_SLOT_READ_BATCH  = 0x32,
+    PROT_OP_SLOT_WRITE_BATCH = 0x33,
+    PROT_OP_FW_ENTER_ROM_DFU = 0xF3
+} ProtOpcode_t;
+
+typedef enum {
+    PROT_TRANSPORT_USB_CDC = 0,
+    PROT_TRANSPORT_TCP_IP  = 1,
+    PROT_TRANSPORT_RS485   = 2
+} ProtTransportKind_t;
+
+typedef enum {
+    PROT_RX_SOF0 = 0,
+    PROT_RX_SOF1,
+    PROT_RX_HEADER,
+    PROT_RX_PAYLOAD,
+    PROT_RX_CRC0,
+    PROT_RX_CRC1
+} ProtRxState_t;
+
+typedef struct {
+    ProtTransportKind_t kind;
+    uint16_t            maxMtuBytes;
+    uint16_t            modelId;
+    uint32_t            fwVersion;
+    uint8_t             stationId;
+    bool                (*tx_send)(const uint8_t *p_data, uint16_t lenBytes);
+    uint32_t            (*get_uptime_ms)(void);
+    bool                (*storage_write)(uint32_t offset, const uint8_t *p_data, uint16_t lenBytes);
+    bool                (*storage_read)(uint32_t offset, uint8_t *p_buf, uint16_t lenBytes);
+    void                (*enter_dfu)(void);
+} ProtTransport_t;
+
+typedef struct {
+    VmInstance_t   *p_vm;
+    ProtTransport_t transport;
+    ProtRxState_t   rxState;
+    uint16_t        rxPos;
+    uint16_t        rxExpectedPayload;
+    uint8_t         rxBuf[PROT_MAX_FRAME_BYTES];
+    uint8_t         txBuf[PROT_MAX_FRAME_BYTES];
+    uint32_t        uploadTotalBytes;
+    uint32_t        uploadExpectedCrc32;
+    uint32_t        uploadNextOffset;
+    bool            uploadActive;
+    uint16_t        watchCount;
+    uint16_t        watchEpoch;
+    uint16_t        watchSlots[PROT_MAX_WATCH_SLOTS];
+    uint8_t         watchLastRaw[PROT_MAX_WATCH_SLOTS][VM_MAX_SLOT_BYTES];
+} ProtInstance_t;
+
+// Initialize MaraProt server instance bound to a MaraVM and transport callbacks.
+bool PROT_Init(ProtInstance_t *p_prot, VmInstance_t *p_vm, const ProtTransport_t *p_transport);
+
+// Feed a single received byte into the framing state machine.
+// Automatically dispatches complete, CRC-verified frames.
+void PROT_FeedByte(ProtInstance_t *p_prot, uint8_t byte);
+
+// Feed a buffer of received bytes into the framing state machine.
+void PROT_FeedBuffer(ProtInstance_t *p_prot, const uint8_t *p_data, uint16_t lenBytes);
+
+// Compute CRC-16-CCITT (poly 0x1021, init 0xFFFF).
+uint16_t PROT_CalcCrc16(const uint8_t *p_data, uint16_t lenBytes);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // MARA_PROT_H

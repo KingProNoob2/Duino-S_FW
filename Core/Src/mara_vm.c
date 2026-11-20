@@ -279,7 +279,9 @@ VmStatus_t VM_LoadImage(VmInstance_t *p_vm, const uint8_t *p_image, uint32_t len
     }
 
     p_vm->runState = VM_STATE_STOPPED;
-    memcpy(p_vm->imageBuf, p_image, lenBytes);
+    if (p_image != p_vm->imageBuf) {
+        memcpy(p_vm->imageBuf, p_image, lenBytes);
+    }
     p_vm->imageSizeBytes = lenBytes;
     p_vm->header         = hdr;
     p_vm->hasValidImage  = true;
