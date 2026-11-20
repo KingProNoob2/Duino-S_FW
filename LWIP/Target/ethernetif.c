@@ -274,6 +274,10 @@ static void low_level_init(struct netif *netif)
     return;
   }
 
+  /* Restrict Auto-Negotiation to 10BASE-T (Full/Half) for 50 MHz MCO1 stability */
+  ETH_PHY_IO_WriteReg(DP83848.DevAddr, 0x04U, 0x0061U);
+  ETH_PHY_IO_WriteReg(DP83848.DevAddr, 0x00U, 0x1200U);
+
   if (hal_eth_init_status == HAL_OK)
   {
     PHYLinkState = DP83848_GetLinkState(&DP83848);
