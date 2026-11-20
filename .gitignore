@@ -1,0 +1,12 @@
+build/
+cmake-build-*/
+.idea/
+*.elf
+*.bin
+*.hex
+*.map
+*.su
+*.d
+*.o
+*.obj
+.DS_Store
