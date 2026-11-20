@@ -66,6 +66,40 @@ Bl24c256aStatus_t BL24C256A_WaitReady(const Bl24c256aDev_t *p_dev, uint32_t time
     }
 }
 
+static Bl24c256aStatus_t write_chunk_with_retry(const Bl24c256aDev_t *p_dev,
+                                              uint16_t memAddr,
+                                              const uint8_t *p_data,
+                                              uint16_t chunkLen)
+{
+    if (HAL_I2C_Mem_Write(p_dev->p_hi2c,
+                          p_dev->devAddr8Bit,
+                          memAddr,
+                          I2C_MEMADD_SIZE_16BIT,
+                          (uint8_t *)(uintptr_t)p_data,
+                          chunkLen,
+                          p_dev->i2cTimeout_ms) == HAL_OK) {
+        return BL24C256A_OK;
+    }
+
+    delay_1ms();
+    Bl24c256aStatus_t status = BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT);
+    if (status != BL24C256A_OK) {
+        return status;
+    }
+
+    if (HAL_I2C_Mem_Write(p_dev->p_hi2c,
+                          p_dev->devAddr8Bit,
+                          memAddr,
+                          I2C_MEMADD_SIZE_16BIT,
+                          (uint8_t *)(uintptr_t)p_data,
+                          chunkLen,
+                          p_dev->i2cTimeout_ms) != HAL_OK) {
+        return BL24C256A_ERR_I2C;
+    }
+
+    return BL24C256A_OK;
+}
+
 Bl24c256aStatus_t BL24C256A_Read(const Bl24c256aDev_t *p_dev, uint16_t memAddr, uint8_t *p_buf, size_t lenBytes)
 {
     if (p_dev == NULL || p_dev->p_hi2c == NULL || (p_buf == NULL && lenBytes > 0U)) {
@@ -83,14 +117,33 @@ Bl24c256aStatus_t BL24C256A_Read(const Bl24c256aDev_t *p_dev, uint16_t memAddr, 
         return status;
     }
 
-    if (HAL_I2C_Mem_Read(p_dev->p_hi2c,
-                         p_dev->devAddr8Bit,
-                         memAddr,
-                         I2C_MEMADD_SIZE_16BIT,
-                         p_buf,
-                         (uint16_t)lenBytes,
-                         p_dev->i2cTimeout_ms) != HAL_OK) {
-        return BL24C256A_ERR_I2C;
+    // Chunk reads so large transfers (e.g. 28 KB VM images at 100 kHz) never exceed i2cTimeout_ms
+    size_t offset = 0U;
+    while (offset < lenBytes) {
+        size_t   remaining = lenBytes - offset;
+        uint16_t chunkLen  = (uint16_t)((remaining < BL24C256A_PAGE_SIZE) ? remaining : BL24C256A_PAGE_SIZE);
+        uint16_t curAddr   = (uint16_t)(memAddr + offset);
+
+        if (HAL_I2C_Mem_Read(p_dev->p_hi2c,
+                             p_dev->devAddr8Bit,
+                             curAddr,
+                             I2C_MEMADD_SIZE_16BIT,
+                             &p_buf[offset],
+                             chunkLen,
+                             p_dev->i2cTimeout_ms) != HAL_OK) {
+            delay_1ms();
+            if (HAL_I2C_Mem_Read(p_dev->p_hi2c,
+                                 p_dev->devAddr8Bit,
+                                 curAddr,
+                                 I2C_MEMADD_SIZE_16BIT,
+                                 &p_buf[offset],
+                                 chunkLen,
+                                 p_dev->i2cTimeout_ms) != HAL_OK) {
+                return BL24C256A_ERR_I2C;
+            }
+        }
+
+        offset += chunkLen;
     }
 
     return BL24C256A_OK;
@@ -118,24 +171,9 @@ Bl24c256aStatus_t BL24C256A_Write(const Bl24c256aDev_t *p_dev, uint16_t memAddr,
             return status;
         }
 
-        if (HAL_I2C_Mem_Write(p_dev->p_hi2c,
-                              p_dev->devAddr8Bit,
-                              curAddr,
-                              I2C_MEMADD_SIZE_16BIT,
-                              (uint8_t *)(uintptr_t)&p_data[offset],
-                              chunkLen,
-                              p_dev->i2cTimeout_ms) != HAL_OK) {
-            delay_1ms();
-            if (BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT) != BL24C256A_OK ||
-                HAL_I2C_Mem_Write(p_dev->p_hi2c,
-                                  p_dev->devAddr8Bit,
-                                  curAddr,
-                                  I2C_MEMADD_SIZE_16BIT,
-                                  (uint8_t *)(uintptr_t)&p_data[offset],
-                                  chunkLen,
-                                  p_dev->i2cTimeout_ms) != HAL_OK) {
-                return BL24C256A_ERR_I2C;
-            }
+        status = write_chunk_with_retry(p_dev, curAddr, &p_data[offset], chunkLen);
+        if (status != BL24C256A_OK) {
+            return status;
         }
 
         offset += chunkLen;
@@ -170,14 +208,9 @@ Bl24c256aStatus_t BL24C256A_Update(const Bl24c256aDev_t *p_dev, uint16_t memAddr
         }
 
         if (memcmp(verifyBuf, &p_data[offset], chunkLen) != 0) {
-            if (HAL_I2C_Mem_Write(p_dev->p_hi2c,
-                                  p_dev->devAddr8Bit,
-                                  curAddr,
-                                  I2C_MEMADD_SIZE_16BIT,
-                                  (uint8_t *)(uintptr_t)&p_data[offset],
-                                  chunkLen,
-                                  p_dev->i2cTimeout_ms) != HAL_OK) {
-                return BL24C256A_ERR_I2C;
+            status = write_chunk_with_retry(p_dev, curAddr, &p_data[offset], chunkLen);
+            if (status != BL24C256A_OK) {
+                return status;
             }
             status = BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT);
             if (status != BL24C256A_OK) {

@@ -21,7 +21,7 @@
 #include "rtc.h"
 
 /* USER CODE BEGIN 0 */
-
+#define RTC_INIT_BKP_MAGIC 0x32F2U
 /* USER CODE END 0 */
 
 RTC_HandleTypeDef hrtc;
@@ -56,7 +56,11 @@ void MX_RTC_Init(void)
   }
 
   /* USER CODE BEGIN Check_RTC_BKUP */
-
+  HAL_PWR_EnableBkUpAccess();
+  if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1) == RTC_INIT_BKP_MAGIC) {
+    HAL_RTC_WaitForSynchro(&hrtc);
+    return;
+  }
   /* USER CODE END Check_RTC_BKUP */
 
   /** Initialize RTC and set the Time and Date
@@ -80,7 +84,7 @@ void MX_RTC_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN RTC_Init 2 */
-
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, RTC_INIT_BKP_MAGIC);
   /* USER CODE END RTC_Init 2 */
 
 }
