@@ -30,7 +30,7 @@
 #define PLC_DFU_BKP_MAGIC        0xDEADBEEFU
 #define PLC_ETH_BKP_MAGIC        0x45544831U
 #define PLC_ETH_TCP_PORT         5020U
-#define PLC_MODE_HOLD_MS         15000U
+#define PLC_MODE_HOLD_MS         10000U
 
 typedef enum {
     DIO_MODE_UNCONFIGURED = 0,
