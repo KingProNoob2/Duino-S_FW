@@ -1,7 +1,4 @@
-/**
- * @file    bl24c256a.c
- * @brief   STM32 HAL driver implementation for BL24C256A-SFRC 32 KB I2C EEPROM.
- */
+// STM32 HAL driver implementation for BL24C256A-SFRC 32 KB I2C EEPROM.
 
 #include "bl24c256a.h"
 #include <string.h>
@@ -13,7 +10,7 @@
   #endif
 #endif
 
-static void eeprom_delay_1ms(void)
+static void delay_1ms(void)
 {
 #ifdef BL24C256A_HAS_RTOS
     if (osKernelGetState() == osKernelRunning) {
@@ -24,243 +21,243 @@ static void eeprom_delay_1ms(void)
     HAL_Delay(1);
 }
 
-static bool check_bounds(uint16_t mem_addr, size_t len)
+static bool check_bounds(uint16_t memAddr, size_t lenBytes)
 {
-    if (len == 0U) {
+    if (lenBytes == 0U) {
         return true;
     }
-    return ((uint32_t)mem_addr + (uint32_t)len) <= BL24C256A_SIZE_BYTES;
+    return ((uint32_t)memAddr + (uint32_t)lenBytes) <= BL24C256A_SIZE_BYTES;
 }
 
-bl24c256a_status_t bl24c256a_init(bl24c256a_t *dev, I2C_HandleTypeDef *hi2c, uint8_t addr_pins)
+static uint16_t calc_page_chunk(uint16_t curAddr, size_t remainingBytes)
 {
-    if (dev == NULL || hi2c == NULL || addr_pins > 7U) {
+    size_t pageRemaining = BL24C256A_PAGE_SIZE - (curAddr % BL24C256A_PAGE_SIZE);
+    return (uint16_t)((remainingBytes < pageRemaining) ? remainingBytes : pageRemaining);
+}
+
+Bl24c256aStatus_t BL24C256A_Init(Bl24c256aDev_t *p_dev, I2C_HandleTypeDef *p_hi2c, uint8_t addrPins)
+{
+    if (p_dev == NULL || p_hi2c == NULL || addrPins > BL24C256A_ADDR_PINS_MAX) {
         return BL24C256A_ERR_PARAM;
     }
 
-    dev->hi2c           = hi2c;
-    dev->dev_addr_8bit  = (uint16_t)((BL24C256A_BASE_ADDR_7BIT | (addr_pins & 0x07U)) << 1U);
-    dev->i2c_timeout_ms = BL24C256A_DEFAULT_TIMEOUT;
+    p_dev->p_hi2c        = p_hi2c;
+    p_dev->devAddr8Bit   = (uint16_t)((BL24C256A_BASE_ADDR_7BIT | (addrPins & BL24C256A_ADDR_PINS_MAX)) << 1U);
+    p_dev->i2cTimeout_ms = BL24C256A_DEFAULT_TIMEOUT;
 
-    return bl24c256a_wait_ready(dev, BL24C256A_WRITE_TIMEOUT);
+    return BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT);
 }
 
-bl24c256a_status_t bl24c256a_wait_ready(const bl24c256a_t *dev, uint32_t timeout_ms)
+Bl24c256aStatus_t BL24C256A_WaitReady(const Bl24c256aDev_t *p_dev, uint32_t timeout_ms)
 {
-    if (dev == NULL || dev->hi2c == NULL) {
+    if (p_dev == NULL || p_dev->p_hi2c == NULL) {
         return BL24C256A_ERR_PARAM;
     }
 
-    uint32_t start = HAL_GetTick();
+    uint32_t startTick_ms = HAL_GetTick();
     for (;;) {
-        if (HAL_I2C_IsDeviceReady(dev->hi2c, dev->dev_addr_8bit, 1U, 5U) == HAL_OK) {
+        if (HAL_I2C_IsDeviceReady(p_dev->p_hi2c, p_dev->devAddr8Bit, 1U, BL24C256A_POLL_TIMEOUT_MS) == HAL_OK) {
             return BL24C256A_OK;
         }
-        if ((HAL_GetTick() - start) >= timeout_ms) {
+        if ((HAL_GetTick() - startTick_ms) >= timeout_ms) {
             return BL24C256A_ERR_TIMEOUT;
         }
-        eeprom_delay_1ms();
+        delay_1ms();
     }
 }
 
-bl24c256a_status_t bl24c256a_read(const bl24c256a_t *dev, uint16_t mem_addr, uint8_t *buf, size_t len)
+Bl24c256aStatus_t BL24C256A_Read(const Bl24c256aDev_t *p_dev, uint16_t memAddr, uint8_t *p_buf, size_t lenBytes)
 {
-    if (dev == NULL || dev->hi2c == NULL || (buf == NULL && len > 0U)) {
+    if (p_dev == NULL || p_dev->p_hi2c == NULL || (p_buf == NULL && lenBytes > 0U)) {
         return BL24C256A_ERR_PARAM;
     }
-    if (!check_bounds(mem_addr, len)) {
+    if (!check_bounds(memAddr, lenBytes)) {
         return BL24C256A_ERR_BOUNDS;
     }
-    if (len == 0U) {
+    if (lenBytes == 0U) {
         return BL24C256A_OK;
     }
 
-    bl24c256a_status_t st = bl24c256a_wait_ready(dev, BL24C256A_WRITE_TIMEOUT);
-    if (st != BL24C256A_OK) {
-        return st;
+    Bl24c256aStatus_t status = BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT);
+    if (status != BL24C256A_OK) {
+        return status;
     }
 
-    if (HAL_I2C_Mem_Read(dev->hi2c,
-                         dev->dev_addr_8bit,
-                         mem_addr,
+    if (HAL_I2C_Mem_Read(p_dev->p_hi2c,
+                         p_dev->devAddr8Bit,
+                         memAddr,
                          I2C_MEMADD_SIZE_16BIT,
-                         buf,
-                         (uint16_t)len,
-                         dev->i2c_timeout_ms) != HAL_OK) {
+                         p_buf,
+                         (uint16_t)lenBytes,
+                         p_dev->i2cTimeout_ms) != HAL_OK) {
         return BL24C256A_ERR_I2C;
     }
 
     return BL24C256A_OK;
 }
 
-bl24c256a_status_t bl24c256a_write(const bl24c256a_t *dev, uint16_t mem_addr, const uint8_t *data, size_t len)
+Bl24c256aStatus_t BL24C256A_Write(const Bl24c256aDev_t *p_dev, uint16_t memAddr, const uint8_t *p_data, size_t lenBytes)
 {
-    if (dev == NULL || dev->hi2c == NULL || (data == NULL && len > 0U)) {
+    if (p_dev == NULL || p_dev->p_hi2c == NULL || (p_data == NULL && lenBytes > 0U)) {
         return BL24C256A_ERR_PARAM;
     }
-    if (!check_bounds(mem_addr, len)) {
+    if (!check_bounds(memAddr, lenBytes)) {
         return BL24C256A_ERR_BOUNDS;
     }
-    if (len == 0U) {
+    if (lenBytes == 0U) {
         return BL24C256A_OK;
     }
 
     size_t offset = 0U;
-    while (offset < len) {
-        uint16_t cur_addr      = (uint16_t)(mem_addr + offset);
-        size_t   page_rem      = BL24C256A_PAGE_SIZE - (cur_addr % BL24C256A_PAGE_SIZE);
-        size_t   remaining     = len - offset;
-        uint16_t chunk_len     = (uint16_t)((remaining < page_rem) ? remaining : page_rem);
+    while (offset < lenBytes) {
+        uint16_t curAddr  = (uint16_t)(memAddr + offset);
+        uint16_t chunkLen = calc_page_chunk(curAddr, lenBytes - offset);
 
-        bl24c256a_status_t st = bl24c256a_wait_ready(dev, BL24C256A_WRITE_TIMEOUT);
-        if (st != BL24C256A_OK) {
-            return st;
+        Bl24c256aStatus_t status = BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT);
+        if (status != BL24C256A_OK) {
+            return status;
         }
 
-        if (HAL_I2C_Mem_Write(dev->hi2c,
-                              dev->dev_addr_8bit,
-                              cur_addr,
+        if (HAL_I2C_Mem_Write(p_dev->p_hi2c,
+                              p_dev->devAddr8Bit,
+                              curAddr,
                               I2C_MEMADD_SIZE_16BIT,
-                              (uint8_t *)(uintptr_t)&data[offset],
-                              chunk_len,
-                              dev->i2c_timeout_ms) != HAL_OK) {
+                              (uint8_t *)(uintptr_t)&p_data[offset],
+                              chunkLen,
+                              p_dev->i2cTimeout_ms) != HAL_OK) {
             return BL24C256A_ERR_I2C;
         }
 
-        offset += chunk_len;
+        offset += chunkLen;
     }
 
-    /* Ensure the final page write cycle completes before returning */
-    return bl24c256a_wait_ready(dev, BL24C256A_WRITE_TIMEOUT);
+    // Ensure the final page write cycle completes before returning.
+    return BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT);
 }
 
-bl24c256a_status_t bl24c256a_update(const bl24c256a_t *dev, uint16_t mem_addr, const uint8_t *data, size_t len)
+Bl24c256aStatus_t BL24C256A_Update(const Bl24c256aDev_t *p_dev, uint16_t memAddr, const uint8_t *p_data, size_t lenBytes)
 {
-    if (dev == NULL || dev->hi2c == NULL || (data == NULL && len > 0U)) {
+    if (p_dev == NULL || p_dev->p_hi2c == NULL || (p_data == NULL && lenBytes > 0U)) {
         return BL24C256A_ERR_PARAM;
     }
-    if (!check_bounds(mem_addr, len)) {
+    if (!check_bounds(memAddr, lenBytes)) {
         return BL24C256A_ERR_BOUNDS;
     }
-    if (len == 0U) {
+    if (lenBytes == 0U) {
         return BL24C256A_OK;
     }
 
-    uint8_t verify_buf[BL24C256A_PAGE_SIZE];
-    size_t offset = 0U;
+    uint8_t verifyBuf[BL24C256A_PAGE_SIZE];
+    size_t  offset = 0U;
 
-    while (offset < len) {
-        uint16_t cur_addr  = (uint16_t)(mem_addr + offset);
-        size_t   page_rem  = BL24C256A_PAGE_SIZE - (cur_addr % BL24C256A_PAGE_SIZE);
-        size_t   remaining = len - offset;
-        uint16_t chunk_len = (uint16_t)((remaining < page_rem) ? remaining : page_rem);
+    while (offset < lenBytes) {
+        uint16_t curAddr  = (uint16_t)(memAddr + offset);
+        uint16_t chunkLen = calc_page_chunk(curAddr, lenBytes - offset);
 
-        bl24c256a_status_t st = bl24c256a_read(dev, cur_addr, verify_buf, chunk_len);
-        if (st != BL24C256A_OK) {
-            return st;
+        Bl24c256aStatus_t status = BL24C256A_Read(p_dev, curAddr, verifyBuf, chunkLen);
+        if (status != BL24C256A_OK) {
+            return status;
         }
 
-        if (memcmp(verify_buf, &data[offset], chunk_len) != 0) {
-            if (HAL_I2C_Mem_Write(dev->hi2c,
-                                  dev->dev_addr_8bit,
-                                  cur_addr,
+        if (memcmp(verifyBuf, &p_data[offset], chunkLen) != 0) {
+            if (HAL_I2C_Mem_Write(p_dev->p_hi2c,
+                                  p_dev->devAddr8Bit,
+                                  curAddr,
                                   I2C_MEMADD_SIZE_16BIT,
-                                  (uint8_t *)(uintptr_t)&data[offset],
-                                  chunk_len,
-                                  dev->i2c_timeout_ms) != HAL_OK) {
+                                  (uint8_t *)(uintptr_t)&p_data[offset],
+                                  chunkLen,
+                                  p_dev->i2cTimeout_ms) != HAL_OK) {
                 return BL24C256A_ERR_I2C;
             }
-            st = bl24c256a_wait_ready(dev, BL24C256A_WRITE_TIMEOUT);
-            if (st != BL24C256A_OK) {
-                return st;
+            status = BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT);
+            if (status != BL24C256A_OK) {
+                return status;
             }
         }
 
-        offset += chunk_len;
+        offset += chunkLen;
     }
 
     return BL24C256A_OK;
 }
 
-bl24c256a_status_t bl24c256a_fill(const bl24c256a_t *dev, uint16_t mem_addr, size_t len, uint8_t value)
+Bl24c256aStatus_t BL24C256A_Fill(const Bl24c256aDev_t *p_dev, uint16_t memAddr, size_t lenBytes, uint8_t fillVal)
 {
-    if (dev == NULL || dev->hi2c == NULL) {
+    if (p_dev == NULL || p_dev->p_hi2c == NULL) {
         return BL24C256A_ERR_PARAM;
     }
-    if (!check_bounds(mem_addr, len)) {
+    if (!check_bounds(memAddr, lenBytes)) {
         return BL24C256A_ERR_BOUNDS;
     }
-    if (len == 0U) {
+    if (lenBytes == 0U) {
         return BL24C256A_OK;
     }
 
-    uint8_t page_buf[BL24C256A_PAGE_SIZE];
-    memset(page_buf, value, sizeof(page_buf));
+    uint8_t pageBuf[BL24C256A_PAGE_SIZE];
+    memset(pageBuf, fillVal, sizeof(pageBuf));
 
     size_t offset = 0U;
-    while (offset < len) {
-        uint16_t cur_addr  = (uint16_t)(mem_addr + offset);
-        size_t   page_rem  = BL24C256A_PAGE_SIZE - (cur_addr % BL24C256A_PAGE_SIZE);
-        size_t   remaining = len - offset;
-        uint16_t chunk_len = (uint16_t)((remaining < page_rem) ? remaining : page_rem);
+    while (offset < lenBytes) {
+        uint16_t curAddr  = (uint16_t)(memAddr + offset);
+        uint16_t chunkLen = calc_page_chunk(curAddr, lenBytes - offset);
 
-        bl24c256a_status_t st = bl24c256a_wait_ready(dev, BL24C256A_WRITE_TIMEOUT);
-        if (st != BL24C256A_OK) {
-            return st;
+        Bl24c256aStatus_t status = BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT);
+        if (status != BL24C256A_OK) {
+            return status;
         }
 
-        if (HAL_I2C_Mem_Write(dev->hi2c,
-                              dev->dev_addr_8bit,
-                              cur_addr,
+        if (HAL_I2C_Mem_Write(p_dev->p_hi2c,
+                              p_dev->devAddr8Bit,
+                              curAddr,
                               I2C_MEMADD_SIZE_16BIT,
-                              page_buf,
-                              chunk_len,
-                              dev->i2c_timeout_ms) != HAL_OK) {
+                              pageBuf,
+                              chunkLen,
+                              p_dev->i2cTimeout_ms) != HAL_OK) {
             return BL24C256A_ERR_I2C;
         }
 
-        offset += chunk_len;
+        offset += chunkLen;
     }
 
-    return bl24c256a_wait_ready(dev, BL24C256A_WRITE_TIMEOUT);
+    return BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT);
 }
 
-bl24c256a_status_t bl24c256a_read_u8(const bl24c256a_t *dev, uint16_t mem_addr, uint8_t *out)
+Bl24c256aStatus_t BL24C256A_ReadU8(const Bl24c256aDev_t *p_dev, uint16_t memAddr, uint8_t *p_out)
 {
-    return bl24c256a_read(dev, mem_addr, out, sizeof(*out));
+    return BL24C256A_Read(p_dev, memAddr, p_out, sizeof(*p_out));
 }
 
-bl24c256a_status_t bl24c256a_write_u8(const bl24c256a_t *dev, uint16_t mem_addr, uint8_t val)
+Bl24c256aStatus_t BL24C256A_WriteU8(const Bl24c256aDev_t *p_dev, uint16_t memAddr, uint8_t val)
 {
-    return bl24c256a_write(dev, mem_addr, &val, sizeof(val));
+    return BL24C256A_Write(p_dev, memAddr, &val, sizeof(val));
 }
 
-bl24c256a_status_t bl24c256a_read_u16(const bl24c256a_t *dev, uint16_t mem_addr, uint16_t *out)
+Bl24c256aStatus_t BL24C256A_ReadU16(const Bl24c256aDev_t *p_dev, uint16_t memAddr, uint16_t *p_out)
 {
-    return bl24c256a_read(dev, mem_addr, (uint8_t *)out, sizeof(*out));
+    return BL24C256A_Read(p_dev, memAddr, (uint8_t *)p_out, sizeof(*p_out));
 }
 
-bl24c256a_status_t bl24c256a_write_u16(const bl24c256a_t *dev, uint16_t mem_addr, uint16_t val)
+Bl24c256aStatus_t BL24C256A_WriteU16(const Bl24c256aDev_t *p_dev, uint16_t memAddr, uint16_t val)
 {
-    return bl24c256a_write(dev, mem_addr, (const uint8_t *)&val, sizeof(val));
+    return BL24C256A_Write(p_dev, memAddr, (const uint8_t *)&val, sizeof(val));
 }
 
-bl24c256a_status_t bl24c256a_read_u32(const bl24c256a_t *dev, uint16_t mem_addr, uint32_t *out)
+Bl24c256aStatus_t BL24C256A_ReadU32(const Bl24c256aDev_t *p_dev, uint16_t memAddr, uint32_t *p_out)
 {
-    return bl24c256a_read(dev, mem_addr, (uint8_t *)out, sizeof(*out));
+    return BL24C256A_Read(p_dev, memAddr, (uint8_t *)p_out, sizeof(*p_out));
 }
 
-bl24c256a_status_t bl24c256a_write_u32(const bl24c256a_t *dev, uint16_t mem_addr, uint32_t val)
+Bl24c256aStatus_t BL24C256A_WriteU32(const Bl24c256aDev_t *p_dev, uint16_t memAddr, uint32_t val)
 {
-    return bl24c256a_write(dev, mem_addr, (const uint8_t *)&val, sizeof(val));
+    return BL24C256A_Write(p_dev, memAddr, (const uint8_t *)&val, sizeof(val));
 }
 
-bl24c256a_status_t bl24c256a_read_float(const bl24c256a_t *dev, uint16_t mem_addr, float *out)
+Bl24c256aStatus_t BL24C256A_ReadFloat(const Bl24c256aDev_t *p_dev, uint16_t memAddr, float *p_out)
 {
-    return bl24c256a_read(dev, mem_addr, (uint8_t *)out, sizeof(*out));
+    return BL24C256A_Read(p_dev, memAddr, (uint8_t *)p_out, sizeof(*p_out));
 }
 
-bl24c256a_status_t bl24c256a_write_float(const bl24c256a_t *dev, uint16_t mem_addr, float val)
+Bl24c256aStatus_t BL24C256A_WriteFloat(const Bl24c256aDev_t *p_dev, uint16_t memAddr, float val)
 {
-    return bl24c256a_write(dev, mem_addr, (const uint8_t *)&val, sizeof(val));
+    return BL24C256A_Write(p_dev, memAddr, (const uint8_t *)&val, sizeof(val));
 }

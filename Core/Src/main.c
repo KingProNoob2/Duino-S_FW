@@ -59,8 +59,8 @@
 
 /* USER CODE BEGIN PV */
 volatile uint16_t plc_adc_raw[4] = {0};
-bl24c256a_t eeprom;
-uint32_t val = 0;
+Bl24c256aDev_t g_main_eeprom;
+uint32_t g_main_bootCount = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -148,19 +148,18 @@ int main(void)
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_3);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_4);
 
-  // 1. Initialize (addr_pins = 0..7 matching A2..A0 hardware strap; 0 = 0x50)
-  if (bl24c256a_init(&eeprom, &hi2c1, 0) == BL24C256A_OK) {
-    bl24c256a_read_u32(&eeprom, 0x0000, &val);
-    // 2. Write & read primitives
-    bl24c256a_write_u32(&eeprom, 0x0000, val + 1);
+  // 1. Initialize (addrPins = 0..7 matching A2..A0 hardware strap; 0 = 0x50)
+  if (BL24C256A_Init(&g_main_eeprom, &hi2c1, 0) == BL24C256A_OK) {
+    BL24C256A_ReadU32(&g_main_eeprom, 0x0000, &g_main_bootCount);
+    BL24C256A_WriteU32(&g_main_eeprom, 0x0000, g_main_bootCount + 1);
   }
 
   while (1) {
     HAL_IWDG_Refresh(&hiwdg);
 
-    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2) == GPIO_PIN_RESET && val > 0) {
-      val = 0;
-      bl24c256a_write_u32(&eeprom, 0x0000, val);
+    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2) == GPIO_PIN_RESET && g_main_bootCount > 0) {
+      g_main_bootCount = 0;
+      BL24C256A_WriteU32(&g_main_eeprom, 0x0000, g_main_bootCount);
     }
   }
   /* USER CODE END 2 */
