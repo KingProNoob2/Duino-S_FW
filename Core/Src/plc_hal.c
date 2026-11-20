@@ -494,7 +494,8 @@ static void poll_comm_mode_switch(void)
 
     uint8_t di14 = hal_di_read(14U);
     uint8_t di15 = hal_di_read(15U);
-    if (di14 != 0U && di15 != 0U) {
+    // Buttons on DI14/DI15 are active-low (0 when pressed)
+    if (di14 == 0U && di15 == 0U) {
         uint32_t nowMs = HAL_GetTick();
         if (!g_plc_hal_modeHolding) {
             g_plc_hal_modeHolding     = true;
