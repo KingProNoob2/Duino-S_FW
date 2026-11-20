@@ -375,7 +375,8 @@ static void dispatch_frame(ProtInstance_t *p_prot)
     uint16_t       payloadLen = p_prot->rxExpectedPayload;
     const uint8_t *p_payload  = &p_prot->rxBuf[PROT_HEADER_BYTES];
 
-    if (stationId != PROT_STATION_P2P &&
+    if (p_prot->transport.kind == PROT_TRANSPORT_RS485 &&
+        stationId != PROT_STATION_P2P &&
         stationId != PROT_STATION_BROADCAST &&
         stationId != p_prot->transport.stationId) {
         return;
