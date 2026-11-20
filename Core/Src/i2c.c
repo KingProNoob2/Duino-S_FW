@@ -63,10 +63,10 @@ static void i2c1_recover_bus(void)
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
   i2c1_delay_us(10U);
 }
+DMA_HandleTypeDef hdma_i2c1_rx;
 /* USER CODE END 0 */
 
 I2C_HandleTypeDef hi2c1;
-DMA_HandleTypeDef hdma_i2c1_rx;
 
 /* I2C1 init function */
 void MX_I2C1_Init(void)

@@ -274,10 +274,6 @@ static void low_level_init(struct netif *netif)
     return;
   }
 
-  /* Restrict Auto-Negotiation to 10BASE-T (Full/Half) for 50 MHz MCO1 stability */
-  ETH_PHY_IO_WriteReg(DP83848.DevAddr, 0x04U, 0x0061U);
-  ETH_PHY_IO_WriteReg(DP83848.DevAddr, 0x00U, 0x1200U);
-
   if (hal_eth_init_status == HAL_OK)
   {
     PHYLinkState = DP83848_GetLinkState(&DP83848);
@@ -336,7 +332,15 @@ static void low_level_init(struct netif *netif)
 #endif /* LWIP_ARP || LWIP_ETHERNET */
 
 /* USER CODE BEGIN LOW_LEVEL_INIT */
-
+  netif->flags |= NETIF_FLAG_IGMP;
+  {
+    ETH_MACFilterConfigTypeDef filterCfg = {0};
+    if (HAL_ETH_GetMACFilterConfig(&heth, &filterCfg) == HAL_OK)
+    {
+      filterCfg.PassAllMulticast = ENABLE;
+      HAL_ETH_SetMACFilterConfig(&heth, &filterCfg);
+    }
+  }
 /* USER CODE END LOW_LEVEL_INIT */
 }
 

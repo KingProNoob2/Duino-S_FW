@@ -102,7 +102,7 @@ void MX_FREERTOS_Init(void) {
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-    /* USER CODE BEGIN RTOS_THREADS */
+  /* USER CODE BEGIN RTOS_THREADS */
   g_freertos_vmTaskHandle = osThreadNew(vm_scan_task, NULL, &kVmTaskAttr);
   /* USER CODE END RTOS_THREADS */
 
@@ -121,12 +121,11 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-  /* init code for USB_DEVICE or LWIP depending on persisted mode */
-  if (PLC_HAL_IsEthMode()) {
-    MX_LWIP_Init();
-  } else {
-    MX_USB_DEVICE_Init();
-  }
+  /* init code for USB_DEVICE */
+  MX_USB_DEVICE_Init();
+
+  /* init code for LWIP */
+  MX_LWIP_Init();
   /* USER CODE BEGIN StartDefaultTask */
   PLC_HAL_Init();
 

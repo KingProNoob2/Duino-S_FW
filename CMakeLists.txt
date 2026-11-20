@@ -50,6 +50,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/hw_tim7.c
     Core/Src/mara_vm.c
     Core/Src/mara_prot.c
+    Core/Src/mdns.c
+    Core/Src/netbiosns.c
     Core/Src/plc_hal.c
     Core/Src/tmp75.c
 )
