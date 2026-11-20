@@ -22,7 +22,7 @@ extern "C" {
 #define PROT_OVERHEAD_BYTES        (PROT_HEADER_BYTES + PROT_CRC_BYTES)
 #define PROT_MAX_PAYLOAD_BYTES     520U
 #define PROT_MAX_FRAME_BYTES       (PROT_OVERHEAD_BYTES + PROT_MAX_PAYLOAD_BYTES)
-#define PROT_MAX_WATCH_SLOTS       128U
+#define PROT_MAX_WATCH_SLOTS       512U
 #define PROT_STATION_P2P           0x00U
 #define PROT_STATION_BROADCAST     0xFFU
 #define PROT_DFU_MAGIC             0xDF00B007U
@@ -49,6 +49,9 @@ typedef enum {
     PROT_OP_WATCH_POLL       = 0x31,
     PROT_OP_SLOT_READ_BATCH  = 0x32,
     PROT_OP_SLOT_WRITE_BATCH = 0x33,
+    PROT_OP_RTC_GET          = 0x40,
+    PROT_OP_RTC_SET          = 0x41,
+    PROT_OP_ONEWIRE_SCAN     = 0x50,
     PROT_OP_FW_ENTER_ROM_DFU = 0xF3
 } ProtOpcode_t;
 
@@ -77,6 +80,9 @@ typedef struct {
     uint32_t            (*get_uptime_ms)(void);
     bool                (*storage_write)(uint32_t offset, const uint8_t *p_data, uint16_t lenBytes);
     bool                (*storage_read)(uint32_t offset, uint8_t *p_buf, uint16_t lenBytes);
+    int64_t             (*rtc_get)(void);
+    bool                (*rtc_set)(int64_t unixSec);
+    uint8_t             (*onewire_scan)(uint8_t dioPin, uint8_t *p_outRoms8, uint8_t maxSensors);
     void                (*enter_dfu)(void);
 } ProtTransport_t;
 

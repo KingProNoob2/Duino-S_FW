@@ -108,6 +108,9 @@ typedef enum {
     VM_OP_PULSE_LEN   = 0x52,
     VM_OP_ONE_SHOT    = 0x53,
     VM_OP_CTUD        = 0x54,
+    VM_OP_RTC_GET     = 0x60,
+    VM_OP_DECODE_DATE = 0x61,
+    VM_OP_ENCODE_DATE = 0x62,
     VM_OP_IO_READ     = 0x70,
     VM_OP_IO_WRITE    = 0x71,
     VM_OP_IO_PWM      = 0x72,
@@ -121,6 +124,12 @@ typedef enum {
     VM_IO_AO  = 3,
     VM_IO_PWM = 4
 } VmIoKind_t;
+
+typedef enum {
+    VM_COMM_TMP75   = 1,
+    VM_COMM_DS18B20 = 2,
+    VM_COMM_CH455G  = 3
+} VmCommBus_t;
 
 typedef struct {
     uint8_t  (*di_read)(uint16_t channel);

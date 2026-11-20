@@ -123,6 +123,26 @@ static float read_float(const VmInstance_t *p_vm, uint16_t slotId)
     }
 }
 
+static uint8_t vm_encode_ch455g_seg(int32_t code, bool dp)
+{
+    static const uint8_t kSegLut[16] = {
+        0x3FU, 0x06U, 0x5BU, 0x4FU, 0x66U, 0x6DU, 0x7DU, 0x07U,
+        0x7FU, 0x6FU, 0x77U, 0x7CU, 0x39U, 0x5EU, 0x79U, 0x71U
+    };
+    uint8_t seg = 0x00U;
+    if (code >= 0 && code <= 15) {
+        seg = kSegLut[code];
+    } else if (code == -2) {
+        seg = 0x40U;
+    } else if (code >= 0x100) {
+        seg = (uint8_t)(code & 0xFF);
+    }
+    if (dp) {
+        seg |= 0x80U;
+    }
+    return seg;
+}
+
 static void write_bool(VmInstance_t *p_vm, uint16_t slotId, uint8_t val)
 {
     uint16_t idx  = slotId & VM_SLOT_INDEX_MASK;
@@ -174,6 +194,128 @@ static void write_float(VmInstance_t *p_vm, uint16_t slotId, float val)
         case VM_TYPE_FLOAT: if (idx < VM_MAX_FLOAT_SLOTS) { p_vm->floatRam[idx] = val; } break;
         default:            break;
     }
+}
+
+static int64_t days_from_civil(int32_t y, uint32_t m, uint32_t d)
+{
+    y -= (m <= 2U) ? 1 : 0;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    uint32_t yoe = (uint32_t)(y - (int32_t)(era * 400));
+    uint32_t doy = (153U * (m + (m > 2U ? (uint32_t)-3 : 9U)) + 2U) / 5U + d - 1U;
+    uint32_t doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+    return era * 146097 + (int64_t)doe - 719468;
+}
+
+static void civil_from_days(int64_t z, int32_t *p_y, uint32_t *p_m, uint32_t *p_d)
+{
+    z += 719468;
+    int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    uint32_t doe = (uint32_t)(z - era * 146097);
+    uint32_t yoe = (doe - doe / 1460U + doe / 36524U - doe / 146096U) / 365U;
+    int64_t y = (int64_t)yoe + era * 400;
+    uint32_t doy = doe - (365U * yoe + yoe / 4U - yoe / 100U);
+    uint32_t mp = (5U * doy + 2U) / 153U;
+    *p_d = doy - (153U * mp + 2U) / 5U + 1U;
+    *p_m = mp + (mp < 10U ? 3U : (uint32_t)-9);
+    *p_y = (int32_t)(y + (*p_m <= 2U ? 1 : 0));
+}
+
+static uint8_t tz_days_in_month(int32_t yr, uint32_t m)
+{
+    if (m == 2U) {
+        bool leap = ((yr % 4) == 0 && ((yr % 100) != 0 || (yr % 400) == 0));
+        return leap ? 29U : 28U;
+    }
+    if (m == 4U || m == 6U || m == 9U || m == 11U) {
+        return 30U;
+    }
+    return 31U;
+}
+
+static int64_t tz_transition_local_sec(int32_t yr, uint8_t month, int8_t week, uint8_t dow, uint8_t hour)
+{
+    uint32_t dim = tz_days_in_month(yr, month);
+    int32_t day;
+    if (week == 0) {
+        day = (int32_t)dow;
+        if (day < 1) { day = 1; }
+        if (day > (int32_t)dim) { day = (int32_t)dim; }
+    } else if (week > 0) {
+        int64_t d1 = days_from_civil(yr, month, 1U);
+        int32_t firstDow = (int32_t)(((d1 + 4) % 7 + 7) % 7);
+        int32_t diff = ((int32_t)dow - firstDow + 7) % 7;
+        day = 1 + diff + ((int32_t)week - 1) * 7;
+        while (day > (int32_t)dim) { day -= 7; }
+    } else {
+        int64_t dLast = days_from_civil(yr, month, dim);
+        int32_t lastDow = (int32_t)(((dLast + 4) % 7 + 7) % 7);
+        int32_t diff = (lastDow - (int32_t)dow + 7) % 7;
+        day = (int32_t)dim - diff;
+    }
+    return days_from_civil(yr, month, (uint32_t)day) * 86400 + (int64_t)hour * 3600;
+}
+
+typedef struct {
+    int16_t stdOffsetMin;
+    int16_t dstOffsetMin;
+    uint8_t startMonth;
+    int8_t  startWeek;
+    uint8_t startDow;
+    uint8_t startHour;
+    uint8_t endMonth;
+    int8_t  endWeek;
+    uint8_t endDow;
+    uint8_t endHour;
+} VmTzRule_t;
+
+static void read_tz_rule(const uint8_t *p_inst, VmTzRule_t *p_rule)
+{
+    p_rule->stdOffsetMin = (int16_t)read_u16_le(&p_inst[18U]);
+    p_rule->dstOffsetMin = (int16_t)read_u16_le(&p_inst[20U]);
+    p_rule->startMonth   = p_inst[22U];
+    p_rule->startWeek    = (int8_t)p_inst[23U];
+    p_rule->startDow     = p_inst[24U];
+    p_rule->startHour    = p_inst[25U];
+    p_rule->endMonth     = p_inst[26U];
+    p_rule->endWeek      = (int8_t)p_inst[27U];
+    p_rule->endDow       = p_inst[28U];
+    p_rule->endHour      = p_inst[29U];
+}
+
+static int64_t tz_offset_sec_at_utc(int64_t utcSec, const VmTzRule_t *p_r)
+{
+    if (p_r->startMonth == 0U || p_r->endMonth == 0U || p_r->dstOffsetMin == 0) {
+        return (int64_t)p_r->stdOffsetMin * 60;
+    }
+    int64_t stdLocal = utcSec + (int64_t)p_r->stdOffsetMin * 60;
+    int64_t stdDays  = (stdLocal >= 0) ? (stdLocal / 86400) : ((stdLocal - 86399) / 86400);
+    int32_t yr = 1970;
+    uint32_t m = 1U, d = 1U;
+    civil_from_days(stdDays, &yr, &m, &d);
+
+    int64_t startUtc = tz_transition_local_sec(yr, p_r->startMonth, p_r->startWeek, p_r->startDow, p_r->startHour)
+                       - (int64_t)p_r->stdOffsetMin * 60;
+    int64_t endUtc   = tz_transition_local_sec(yr, p_r->endMonth, p_r->endWeek, p_r->endDow, p_r->endHour)
+                       - (int64_t)(p_r->stdOffsetMin + p_r->dstOffsetMin) * 60;
+
+    bool isDst = (p_r->startMonth < p_r->endMonth)
+                 ? (utcSec >= startUtc && utcSec < endUtc)
+                 : (utcSec >= startUtc || utcSec < endUtc);
+    return (int64_t)(p_r->stdOffsetMin + (isDst ? p_r->dstOffsetMin : 0)) * 60;
+}
+
+static int64_t tz_local_to_utc(int32_t yr, uint32_t mon, uint32_t day, int32_t hr, int32_t min, int32_t sec, const VmTzRule_t *p_r)
+{
+    int64_t localSec = days_from_civil(yr, mon, day) * 86400 + (int64_t)hr * 3600 + (int64_t)min * 60 + (int64_t)sec;
+    if (p_r->startMonth == 0U || p_r->endMonth == 0U || p_r->dstOffsetMin == 0) {
+        return localSec - (int64_t)p_r->stdOffsetMin * 60;
+    }
+    int64_t startWall = tz_transition_local_sec(yr, p_r->startMonth, p_r->startWeek, p_r->startDow, p_r->startHour);
+    int64_t endWall   = tz_transition_local_sec(yr, p_r->endMonth, p_r->endWeek, p_r->endDow, p_r->endHour);
+    bool isDst = (p_r->startMonth < p_r->endMonth)
+                 ? (localSec >= startWall && localSec < endWall)
+                 : (localSec >= startWall || localSec < endWall);
+    return localSec - (int64_t)(p_r->stdOffsetMin + (isDst ? p_r->dstOffsetMin : 0)) * 60;
 }
 
 static void apply_init_table(VmInstance_t *p_vm)
@@ -470,6 +612,35 @@ VmStatus_t VM_StepThread(VmInstance_t *p_vm, uint8_t threadId, uint32_t dt_us)
                 }
                 break;
             }
+            case VM_OP_PACK8: {
+                nextPc = pc + 24U;
+                if (nextPc > p_vm->imageSizeBytes) { break; }
+                if (enabled) {
+                    uint8_t packed = 0U;
+                    for (uint8_t i = 0U; i < 8U; i++) {
+                        uint16_t bSlot = (i == 0U) ? srcA : read_u16_le(&p_vm->imageBuf[pc + 6U + ((uint32_t)i * 2U)]);
+                        if (read_bool(p_vm, bSlot) != 0U) {
+                            uint8_t bitIdx = (flags != 0U) ? (uint8_t)(7U - i) : i;
+                            packed |= (uint8_t)(1U << bitIdx);
+                        }
+                    }
+                    write_int(p_vm, dst, (int32_t)packed);
+                }
+                break;
+            }
+            case VM_OP_UNPACK8: {
+                nextPc = pc + 24U;
+                if (nextPc > p_vm->imageSizeBytes) { break; }
+                if (enabled) {
+                    uint32_t val = (uint32_t)read_int(p_vm, srcA);
+                    for (uint8_t i = 0U; i < 8U; i++) {
+                        uint16_t bSlot = (i == 0U) ? dst : read_u16_le(&p_vm->imageBuf[pc + 6U + ((uint32_t)i * 2U)]);
+                        uint8_t bitIdx = (flags != 0U) ? (uint8_t)(7U - i) : i;
+                        write_bool(p_vm, bSlot, ((val >> bitIdx) & 1U) ? 1U : 0U);
+                    }
+                }
+                break;
+            }
             case VM_OP_NOT: {
                 if (enabled) {
                     write_bool(p_vm, dst, (read_bool(p_vm, srcA) == 0U) ? 1U : 0U);
@@ -763,6 +934,65 @@ VmStatus_t VM_StepThread(VmInstance_t *p_vm, uint8_t threadId, uint32_t dt_us)
                 }
                 break;
             }
+            case VM_OP_RTC_GET: {
+                if (enabled) {
+                    int64_t ts = (p_vm->hal.rtc_unix_sec != NULL) ? p_vm->hal.rtc_unix_sec() : 0;
+                    write_long(p_vm, dst, ts);
+                }
+                break;
+            }
+            case VM_OP_DECODE_DATE: {
+                nextPc = pc + 32U;
+                if (nextPc > p_vm->imageSizeBytes) { break; }
+                if (enabled) {
+                    uint16_t monSlot = read_u16_le(&p_vm->imageBuf[pc + 8U]);
+                    uint16_t daySlot = read_u16_le(&p_vm->imageBuf[pc + 10U]);
+                    uint16_t hrSlot  = read_u16_le(&p_vm->imageBuf[pc + 12U]);
+                    uint16_t minSlot = read_u16_le(&p_vm->imageBuf[pc + 14U]);
+                    uint16_t secSlot = read_u16_le(&p_vm->imageBuf[pc + 16U]);
+                    VmTzRule_t tz;
+                    read_tz_rule(&p_vm->imageBuf[pc], &tz);
+                    int64_t  utcTs   = read_long(p_vm, srcA);
+                    int64_t  localTs = utcTs + tz_offset_sec_at_utc(utcTs, &tz);
+                    int64_t  days    = (localTs >= 0) ? (localTs / 86400) : ((localTs - 86399) / 86400);
+                    int64_t  rem     = localTs - (days * 86400);
+                    int32_t  yr      = 1970;
+                    uint32_t mon     = 1U;
+                    uint32_t day     = 1U;
+                    civil_from_days(days, &yr, &mon, &day);
+                    write_int(p_vm, dst, yr);
+                    write_int(p_vm, monSlot, (int32_t)mon);
+                    write_int(p_vm, daySlot, (int32_t)day);
+                    write_int(p_vm, hrSlot,  (int32_t)(rem / 3600));
+                    write_int(p_vm, minSlot, (int32_t)((rem % 3600) / 60));
+                    write_int(p_vm, secSlot, (int32_t)(rem % 60));
+                }
+                break;
+            }
+            case VM_OP_ENCODE_DATE: {
+                nextPc = pc + 32U;
+                if (nextPc > p_vm->imageSizeBytes) { break; }
+                if (enabled) {
+                    uint16_t monSlot = read_u16_le(&p_vm->imageBuf[pc + 8U]);
+                    uint16_t daySlot = read_u16_le(&p_vm->imageBuf[pc + 10U]);
+                    uint16_t hrSlot  = read_u16_le(&p_vm->imageBuf[pc + 12U]);
+                    uint16_t minSlot = read_u16_le(&p_vm->imageBuf[pc + 14U]);
+                    uint16_t secSlot = read_u16_le(&p_vm->imageBuf[pc + 16U]);
+                    VmTzRule_t tz;
+                    read_tz_rule(&p_vm->imageBuf[pc], &tz);
+                    int32_t  yr      = read_int(p_vm, srcA);
+                    int32_t  mon     = read_int(p_vm, monSlot);
+                    int32_t  day     = read_int(p_vm, daySlot);
+                    int32_t  hr      = read_int(p_vm, hrSlot);
+                    int32_t  min     = read_int(p_vm, minSlot);
+                    int32_t  sec     = read_int(p_vm, secSlot);
+                    if (mon < 1) { mon = 1; } else if (mon > 12) { mon = 12; }
+                    if (day < 1) { day = 1; } else if (day > 31) { day = 31; }
+                    int64_t ts = tz_local_to_utc(yr, (uint32_t)mon, (uint32_t)day, hr, min, sec, &tz);
+                    write_long(p_vm, dst, ts);
+                }
+                break;
+            }
             case VM_OP_IO_READ: {
                 if (enabled) {
                     if (flags == VM_IO_DI && p_vm->hal.di_read != NULL) {
@@ -792,6 +1022,106 @@ VmStatus_t VM_StepThread(VmInstance_t *p_vm, uint8_t threadId, uint32_t dt_us)
                     float dty = enabled ? read_float(p_vm, dtySlot) : 0.0f;
                     uint8_t act = p_vm->hal.pwm_set(srcA, read_int(p_vm, frqSlot), dty);
                     write_bool(p_vm, dst, act);
+                }
+                break;
+            }
+            case VM_OP_COMM_EXEC: {
+                if (flags == VM_COMM_TMP75) {
+                    nextPc = pc + 12U;
+                    if (nextPc > p_vm->imageSizeBytes) { break; }
+                    uint16_t okSlot = read_u16_le(&p_vm->imageBuf[pc + 8U]);
+                    if (enabled && p_vm->hal.comm_exec != NULL) {
+                        int64_t rxVal = 0;
+                        int32_t err   = 1;
+                        p_vm->hal.comm_exec(VM_COMM_TMP75, srcA, 0, &rxVal, &err);
+                        uint32_t fBits = (uint32_t)(uint64_t)rxVal;
+                        float tempC = 0.0f;
+                        memcpy(&tempC, &fBits, sizeof(tempC));
+                        write_float(p_vm, dst, tempC);
+                        if (okSlot != VM_SLOT_ALWAYS_ENABLED) {
+                            write_bool(p_vm, okSlot, (err == 0) ? 1U : 0U);
+                        }
+                    } else if (!enabled && okSlot != VM_SLOT_ALWAYS_ENABLED) {
+                        write_bool(p_vm, okSlot, 0U);
+                    }
+                } else if (flags == VM_COMM_DS18B20) {
+                    nextPc = pc + 20U;
+                    if (nextPc > p_vm->imageSizeBytes) { break; }
+                    uint16_t okSlot = read_u16_le(&p_vm->imageBuf[pc + 8U]);
+                    uint64_t rom64  = read_u64_le(&p_vm->imageBuf[pc + 12U]);
+                    if (enabled && p_vm->hal.comm_exec != NULL) {
+                        int64_t rxVal = 0;
+                        int32_t err   = 1;
+                        p_vm->hal.comm_exec(VM_COMM_DS18B20, srcA, (int64_t)rom64, &rxVal, &err);
+                        uint32_t fBits = (uint32_t)(uint64_t)rxVal;
+                        float tempC = 0.0f;
+                        memcpy(&tempC, &fBits, sizeof(tempC));
+                        write_float(p_vm, dst, tempC);
+                        if (okSlot != VM_SLOT_ALWAYS_ENABLED) {
+                            write_bool(p_vm, okSlot, (err == 0) ? 1U : 0U);
+                        }
+                    } else if (!enabled && okSlot != VM_SLOT_ALWAYS_ENABLED) {
+                        write_bool(p_vm, okSlot, 0U);
+                    }
+                } else if (flags == VM_COMM_CH455G) {
+                    nextPc = pc + 24U;
+                    if (nextPc > p_vm->imageSizeBytes) { break; }
+                    uint16_t modeAndMask = read_u16_le(&p_vm->imageBuf[pc + 8U]);
+                    uint16_t slot0       = read_u16_le(&p_vm->imageBuf[pc + 10U]);
+                    uint16_t slot1       = read_u16_le(&p_vm->imageBuf[pc + 12U]);
+                    uint16_t slot2       = read_u16_le(&p_vm->imageBuf[pc + 14U]);
+                    uint16_t slot3       = read_u16_le(&p_vm->imageBuf[pc + 16U]);
+                    uint16_t slot4       = read_u16_le(&p_vm->imageBuf[pc + 18U]);
+                    uint16_t slot5       = read_u16_le(&p_vm->imageBuf[pc + 20U]);
+
+                    uint8_t  mode      = (uint8_t)(modeAndMask & 0x01U);
+                    uint8_t  digitMask = (uint8_t)((modeAndMask >> 4U) & 0x0FU);
+                    uint64_t txPacked  = 0ULL;
+
+                    if (mode == 0U) {
+                        float    val = read_float(p_vm, slot0);
+                        uint32_t fBits = 0U;
+                        memcpy(&fBits, &val, sizeof(fBits));
+                        int32_t dec = read_int(p_vm, slot1);
+                        int32_t brt = read_int(p_vm, slot2);
+                        if (dec < 0) { dec = 0; } else if (dec > 3) { dec = 3; }
+                        if (brt < 1) { brt = 1; } else if (brt > 8) { brt = 8; }
+                        txPacked = (uint64_t)fBits
+                                 | (((uint64_t)(uint32_t)dec) << 32U)
+                                 | (((uint64_t)(uint32_t)brt) << 36U);
+                    } else {
+                        int32_t d[4] = {
+                            read_int(p_vm, slot0),
+                            read_int(p_vm, slot1),
+                            read_int(p_vm, slot2),
+                            read_int(p_vm, slot3)
+                        };
+                        int32_t dpMask = read_int(p_vm, slot4);
+                        int32_t brt    = read_int(p_vm, slot5);
+                        if (brt < 1) { brt = 1; } else if (brt > 8) { brt = 8; }
+                        uint32_t segPacked = 0U;
+                        for (uint8_t i = 0U; i < 4U; i++) {
+                            uint8_t seg = ((digitMask & (1U << i)) != 0U)
+                                        ? vm_encode_ch455g_seg(d[i], ((dpMask >> i) & 1) != 0)
+                                        : 0x00U;
+                            segPacked |= ((uint32_t)seg) << (i * 8U);
+                        }
+                        txPacked = (uint64_t)segPacked
+                                 | (((uint64_t)(uint32_t)brt) << 36U);
+                    }
+
+                    txPacked |= (((uint64_t)digitMask) << 40U)
+                             |  (((uint64_t)(enabled ? 1U : 0U)) << 44U)
+                             |  (((uint64_t)mode) << 45U);
+
+                    if (p_vm->hal.comm_exec != NULL) {
+                        int64_t rxVal = 0;
+                        int32_t err   = 0;
+                        p_vm->hal.comm_exec(VM_COMM_CH455G, srcA, (int64_t)txPacked, &rxVal, &err);
+                        write_bool(p_vm, dst, (enabled && err == 0) ? 1U : 0U);
+                    } else {
+                        write_bool(p_vm, dst, 0U);
+                    }
                 }
                 break;
             }

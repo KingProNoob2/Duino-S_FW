@@ -427,6 +427,22 @@ static void dispatch_frame(ProtInstance_t *p_prot)
             }
             break;
         }
+        case PROT_OP_ONEWIRE_SCAN: {
+            if (p_prot->transport.onewire_scan != NULL) {
+                uint8_t dioPin = (payloadLen >= 1U) ? p_payload[0] : 13U;
+                uint8_t roms[8U * 8U];
+                uint8_t count = p_prot->transport.onewire_scan(dioPin, roms, 8U);
+                if (count > 8U) { count = 8U; }
+                p_prot->txBuf[PROT_HEADER_BYTES] = count;
+                if (count > 0U) {
+                    memcpy(&p_prot->txBuf[PROT_HEADER_BYTES + 1U], roms, (size_t)count * 8U);
+                }
+                send_response(p_prot, seqId, opcode, PROT_STATUS_OK, (uint16_t)(1U + (count * 8U)));
+            } else {
+                send_response(p_prot, seqId, opcode, PROT_STATUS_ERR_OPCODE, 0U);
+            }
+            break;
+        }
         case PROT_OP_FW_ENTER_ROM_DFU: {
             if (payloadLen >= 4U && read_u32_le(p_payload) == PROT_DFU_MAGIC && p_prot->transport.enter_dfu != NULL) {
                 p_prot->txBuf[PROT_HEADER_BYTES] = 1U;
