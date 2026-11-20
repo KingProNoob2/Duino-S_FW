@@ -90,6 +90,7 @@ __attribute__((section(".ccmram"))) static ProtInstance_t g_plc_hal_prot;
 static PlcDioMode_t      g_plc_hal_dioMode[PLC_DIO_MAX_INDEX];
 static Bl24c256aDev_t    g_plc_hal_eeprom;
 static bool              g_plc_hal_eepromReady = false;
+static volatile bool     g_plc_hal_ready = false;
 static uint8_t           g_plc_hal_cdcRxBuf[PLC_HAL_CDC_RX_BUF_SIZE];
 static volatile uint16_t g_plc_hal_rxHead = 0U;
 static volatile uint16_t g_plc_hal_rxTail = 0U;
@@ -345,7 +346,9 @@ bool PLC_HAL_Init(void)
         .enter_dfu     = enter_rom_dfu
     };
 
-    return PROT_Init(&g_plc_hal_prot, &g_plc_hal_vm, &transport);
+    bool ok = PROT_Init(&g_plc_hal_prot, &g_plc_hal_vm, &transport);
+    g_plc_hal_ready = ok;
+    return ok;
 }
 
 void PLC_HAL_CdcRxPush(const uint8_t *p_data, uint32_t lenBytes)
@@ -387,7 +390,7 @@ void PLC_HAL_PollProtocol(void)
 
 void PLC_HAL_StepVmTick(uint32_t tick5msCount)
 {
-    if (VM_GetState(&g_plc_hal_vm) != VM_STATE_RUNNING) {
+    if (!g_plc_hal_ready || g_plc_hal_prot.uploadActive || VM_GetState(&g_plc_hal_vm) != VM_STATE_RUNNING) {
         return;
     }
 
