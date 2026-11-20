@@ -94,7 +94,12 @@ uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
 uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
-
+static uint8_t g_cdc_lineCoding[7] = {
+    0x00U, 0xC2U, 0x01U, 0x00U, // 115200 baud (little-endian)
+    0x00U,                      // 1 stop bit
+    0x00U,                      // No parity
+    0x08U                       // 8 data bits
+};
 /* USER CODE END PRIVATE_VARIABLES */
 
 /**
@@ -220,11 +225,19 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
   /* 6      | bDataBits  |   1   | Number Data bits (5, 6, 7, 8 or 16).          */
   /*******************************************************************************/
     case CDC_SET_LINE_CODING:
-
+      if (length >= 7U) {
+        for (uint16_t i = 0U; i < 7U; i++) {
+          g_cdc_lineCoding[i] = pbuf[i];
+        }
+      }
     break;
 
     case CDC_GET_LINE_CODING:
-
+      if (length >= 7U) {
+        for (uint16_t i = 0U; i < 7U; i++) {
+          pbuf[i] = g_cdc_lineCoding[i];
+        }
+      }
     break;
 
     case CDC_SET_CONTROL_LINE_STATE:
