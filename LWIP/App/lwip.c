@@ -23,6 +23,8 @@
 #include "lwip/init.h"
 #include "lwip/netif.h"
 #include "lwip/dhcp.h"
+#include "lwip/etharp.h"
+#include "lwip/tcpip.h"
 #if (defined ( __CC_ARM ) || defined (__ARMCC_VERSION))  /* MDK ARM Compiler */
 #include "lwip/sio.h"
 #endif /* MDK ARM Compiler */
@@ -30,7 +32,14 @@
 #include <string.h>
 
 /* USER CODE BEGIN 0 */
-
+static void send_gratuitous_arp_cb(void *arg)
+{
+  struct netif *netif = (struct netif *)arg;
+  if (netif_is_up(netif) && netif_is_link_up(netif) && !ip4_addr_isany_val(*netif_ip4_addr(netif)))
+  {
+    etharp_gratuitous(netif);
+  }
+}
 /* USER CODE END 0 */
 /* Private function prototypes -----------------------------------------------*/
 static void ethernet_link_status_updated(struct netif *netif);
@@ -83,10 +92,17 @@ void MX_LWIP_Init(void)
   /* Initialize the LwIP stack with RTOS */
   tcpip_init( NULL, NULL );
 
+#if LWIP_DHCP
   /* IP addresses initialization with DHCP (IPv4) */
   ip4_addr_set_zero(&ipaddr);
   ip4_addr_set_zero(&netmask);
   ip4_addr_set_zero(&gw);
+#else
+  /* IP addresses initialization without DHCP (IPv4) */
+  IP4_ADDR(&ipaddr, IP_ADDRESS[0], IP_ADDRESS[1], IP_ADDRESS[2], IP_ADDRESS[3]);
+  IP4_ADDR(&netmask, NETMASK_ADDRESS[0], NETMASK_ADDRESS[1], NETMASK_ADDRESS[2], NETMASK_ADDRESS[3]);
+  IP4_ADDR(&gw, GATEWAY_ADDRESS[0], GATEWAY_ADDRESS[1], GATEWAY_ADDRESS[2], GATEWAY_ADDRESS[3]);
+#endif
 
   /* add the network interface (IPv4/IPv6) with RTOS */
   netif_add(&gnetif, &ipaddr, &netmask, &gw, NULL, &ethernetif_init, &tcpip_input);
@@ -100,8 +116,10 @@ void MX_LWIP_Init(void)
   /* Set the link callback function, this function is called on change of link status*/
   netif_set_link_callback(&gnetif, ethernet_link_status_updated);
 
+#if LWIP_DHCP
   /* Start DHCP negotiation */
   dhcp_start(&gnetif);
+#endif
 
   /* Create the Ethernet link handler thread */
 /* USER CODE BEGIN H7_OS_THREAD_NEW_CMSIS_RTOS_V2 */
@@ -134,6 +152,10 @@ static void ethernet_link_status_updated(struct netif *netif)
   if (netif_is_up(netif))
   {
 /* USER CODE BEGIN 5 */
+  if (netif_is_link_up(netif) && !ip4_addr_isany_val(*netif_ip4_addr(netif)))
+  {
+    tcpip_callback(send_gratuitous_arp_cb, netif);
+  }
 /* USER CODE END 5 */
   }
   else /* netif is down */
