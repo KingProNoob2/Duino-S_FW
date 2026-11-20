@@ -14,7 +14,7 @@ extern "C" {
 
 #define VM_MAGIC_MFLW            0x574C464DU
 #define VM_FORMAT_VERSION        0x0001U
-#define VM_HEADER_SIZE_BYTES     64U
+#define VM_HEADER_SIZE_BYTES     72U
 #define VM_THREAD_COUNT          6U
 #define VM_MAX_IMAGE_BYTES       28672U
 #define VM_MAX_BOOL_SLOTS        2048U

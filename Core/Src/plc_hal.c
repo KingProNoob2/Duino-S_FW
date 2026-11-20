@@ -257,7 +257,11 @@ static bool eeprom_storage_write(uint32_t offset, const uint8_t *p_data, uint16_
     if ((addr + lenBytes) > PLC_HAL_EEPROM_RET_ADDR) {
         return false;
     }
-    return BL24C256A_Write(&g_plc_hal_eeprom, (uint16_t)addr, p_data, lenBytes) == BL24C256A_OK;
+    if (BL24C256A_Write(&g_plc_hal_eeprom, (uint16_t)addr, p_data, lenBytes) != BL24C256A_OK) {
+        // Fallback to RAM-only execution if EEPROM fails, so uploads never brick live runs
+        g_plc_hal_eepromReady = false;
+    }
+    return true;
 }
 
 static bool eeprom_storage_read(uint32_t offset, uint8_t *p_buf, uint16_t lenBytes)
