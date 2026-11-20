@@ -164,6 +164,34 @@ const uint8_t APBPrescTable[8]  = {0, 0, 0, 0, 1, 2, 3, 4};
   * @param  None
   * @retval None
   */
+void PLC_Boot_CheckRomDfuJump(void)
+{
+  /* Enable PWR clock and backup domain access before reading RTC->BKP0R */
+  RCC->APB1ENR |= RCC_APB1ENR_PWREN;
+  (void)RCC->APB1ENR;
+  PWR->CR |= PWR_CR_DBP;
+  (void)PWR->CR;
+
+  if (RTC->BKP0R == 0xDEADBEEFU)
+  {
+    /* Clear DFU magic so a subsequent reset boots the application normally */
+    RTC->BKP0R = 0U;
+    __DSB();
+
+    /* Remap System Memory (0x1FFF0000) to 0x00000000 for STM32F407 ROM DFU */
+    RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
+    (void)RCC->APB2ENR;
+    SYSCFG->MEMRMP = 0x01U;
+    __DSB();
+    __ISB();
+
+    uint32_t dfuMsp   = *(__IO uint32_t *)0x1FFF0000U;
+    uint32_t dfuReset = *(__IO uint32_t *)0x1FFF0004U;
+    __set_MSP(dfuMsp);
+    ((void (*)(void))dfuReset)();
+  }
+}
+
 void SystemInit(void)
 {
   /* FPU settings ------------------------------------------------------------*/

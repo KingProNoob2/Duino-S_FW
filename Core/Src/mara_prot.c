@@ -5,7 +5,7 @@
 
 #define PROT_CRC16_POLY          0x1021U
 #define PROT_CRC16_INIT          0xFFFFU
-#define PROT_MODEL_NAME          "STM32F407-Maraflow-Std"
+#define PROT_MODEL_NAME          "Duino - S"
 #define PROT_MODEL_NAME_BYTES    24U
 #define PROT_CTRL_STOP           0U
 #define PROT_CTRL_START          1U
@@ -238,17 +238,20 @@ static void handle_watch_subscribe(ProtInstance_t *p_prot, uint16_t seqId, const
         return;
     }
 
-    uint16_t count = read_u16_le(&p_req[1]);
-    if (count > PROT_MAX_WATCH_SLOTS || (3U + (count * 2U)) > reqLen) {
+    uint8_t  mode     = p_req[0];
+    uint16_t count    = read_u16_le(&p_req[1]);
+    uint16_t startIdx = (mode == 1U) ? p_prot->watchCount : 0U;
+    if ((startIdx + count) > PROT_MAX_WATCH_SLOTS || (3U + (count * 2U)) > reqLen) {
         send_response(p_prot, seqId, PROT_OP_WATCH_SUBSCRIBE, PROT_STATUS_ERR_PARAM, 0U);
         return;
     }
 
-    p_prot->watchCount = count;
+    p_prot->watchCount = (uint16_t)(startIdx + count);
     p_prot->watchEpoch = 1U;
     for (uint16_t i = 0U; i < count; i++) {
-        p_prot->watchSlots[i] = read_u16_le(&p_req[3U + (i * 2U)]);
-        memset(p_prot->watchLastRaw[i], 0, VM_MAX_SLOT_BYTES);
+        uint16_t dstIdx = (uint16_t)(startIdx + i);
+        p_prot->watchSlots[dstIdx] = read_u16_le(&p_req[3U + (i * 2U)]);
+        memset(p_prot->watchLastRaw[dstIdx], 0, VM_MAX_SLOT_BYTES);
     }
 
     write_u16_le(&p_prot->txBuf[PROT_HEADER_BYTES + 0U], p_prot->watchCount);
@@ -397,6 +400,33 @@ static void dispatch_frame(ProtInstance_t *p_prot)
         case PROT_OP_WATCH_POLL:       handle_watch_poll(p_prot, seqId, p_payload, payloadLen); break;
         case PROT_OP_SLOT_READ_BATCH:  handle_slot_read_batch(p_prot, seqId, p_payload, payloadLen); break;
         case PROT_OP_SLOT_WRITE_BATCH: handle_slot_write_batch(p_prot, seqId, p_payload, payloadLen); break;
+        case PROT_OP_RTC_GET: {
+            if (p_prot->transport.rtc_get != NULL) {
+                uint64_t raw = (uint64_t)p_prot->transport.rtc_get();
+                for (uint8_t i = 0U; i < 8U; i++) {
+                    p_prot->txBuf[PROT_HEADER_BYTES + i] = (uint8_t)((raw >> (i * 8U)) & 0xFFU);
+                }
+                send_response(p_prot, seqId, opcode, PROT_STATUS_OK, 8U);
+            } else {
+                send_response(p_prot, seqId, opcode, PROT_STATUS_ERR_OPCODE, 0U);
+            }
+            break;
+        }
+        case PROT_OP_RTC_SET: {
+            if (payloadLen < 8U) {
+                send_response(p_prot, seqId, opcode, PROT_STATUS_ERR_PARAM, 0U);
+            } else if (p_prot->transport.rtc_set != NULL) {
+                uint64_t raw = 0U;
+                for (uint8_t i = 0U; i < 8U; i++) {
+                    raw |= ((uint64_t)p_payload[i]) << (i * 8U);
+                }
+                bool ok = p_prot->transport.rtc_set((int64_t)raw);
+                send_response(p_prot, seqId, opcode, ok ? PROT_STATUS_OK : PROT_STATUS_ERR_PARAM, 0U);
+            } else {
+                send_response(p_prot, seqId, opcode, PROT_STATUS_ERR_OPCODE, 0U);
+            }
+            break;
+        }
         case PROT_OP_FW_ENTER_ROM_DFU: {
             if (payloadLen >= 4U && read_u32_le(p_payload) == PROT_DFU_MAGIC && p_prot->transport.enter_dfu != NULL) {
                 p_prot->txBuf[PROT_HEADER_BYTES] = 1U;

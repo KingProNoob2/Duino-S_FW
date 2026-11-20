@@ -59,7 +59,10 @@ defined in linker script */
   .type  Reset_Handler, %function
 Reset_Handler:  
   ldr   sp, =_estack     /* set stack pointer */
-  
+
+/* Check RTC backup magic for immediate ROM USB DFU bootloader jump */
+  bl  PLC_Boot_CheckRomDfuJump
+
 /* Call the clock system initialization function.*/
   bl  SystemInit  
 
