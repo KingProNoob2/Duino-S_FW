@@ -125,7 +125,17 @@ Bl24c256aStatus_t BL24C256A_Write(const Bl24c256aDev_t *p_dev, uint16_t memAddr,
                               (uint8_t *)(uintptr_t)&p_data[offset],
                               chunkLen,
                               p_dev->i2cTimeout_ms) != HAL_OK) {
-            return BL24C256A_ERR_I2C;
+            delay_1ms();
+            if (BL24C256A_WaitReady(p_dev, BL24C256A_WRITE_TIMEOUT) != BL24C256A_OK ||
+                HAL_I2C_Mem_Write(p_dev->p_hi2c,
+                                  p_dev->devAddr8Bit,
+                                  curAddr,
+                                  I2C_MEMADD_SIZE_16BIT,
+                                  (uint8_t *)(uintptr_t)&p_data[offset],
+                                  chunkLen,
+                                  p_dev->i2cTimeout_ms) != HAL_OK) {
+                return BL24C256A_ERR_I2C;
+            }
         }
 
         offset += chunkLen;
