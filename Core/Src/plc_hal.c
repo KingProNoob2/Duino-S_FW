@@ -12,23 +12,29 @@
 #include "usbd_cdc_if.h"
 #include <string.h>
 
-#define PLC_DIO_OUT_COUNT        16U
+#define PLC_DIO_MAX_INDEX        28U
 #define PLC_PWM_COUNT            8U
 #define PLC_ADC_COUNT            4U
 #define PLC_DAC_COUNT            2U
-#define PLC_PWM_MAX_ARR          999U
+#define PLC_PWM_TIM_CLK_HZ       1000000U
+#define PLC_PWM_DEFAULT_ARR      999U
 #define PLC_CDC_TX_RETRIES       20U
 #define PLC_DFU_BKP_MAGIC        0xDEADBEEFU
 
-typedef struct {
-    GPIO_TypeDef *p_port;
-    uint16_t      pin;
-} PlcGpioPin_t;
+typedef enum {
+    DIO_MODE_UNCONFIGURED = 0,
+    DIO_MODE_INPUT        = 1,
+    DIO_MODE_OUTPUT       = 2,
+    DIO_MODE_PWM          = 3
+} PlcDioMode_t;
 
 typedef struct {
+    GPIO_TypeDef      *p_port;
+    uint16_t           pin;
     TIM_HandleTypeDef *p_htim;
-    uint32_t           channel;
-} PlcPwmChannel_t;
+    uint32_t           timChannel;
+    uint8_t            gpioAf;
+} PlcDioDesc_t;
 
 typedef struct {
     uint32_t magic;
@@ -39,61 +45,102 @@ typedef struct {
 
 extern volatile uint16_t plc_adc_raw[PLC_ADC_COUNT];
 
-static const PlcGpioPin_t kDoPins[PLC_DIO_OUT_COUNT] = {
-    {DIO2_GPIO_Port,  DIO2_Pin},
-    {DIO3_GPIO_Port,  DIO3_Pin},
-    {DIO13_GPIO_Port, DIO13_Pin},
-    {DIO15_GPIO_Port, DIO15_Pin},
-    {DIO16_GPIO_Port, DIO16_Pin},
-    {DIO17_GPIO_Port, DIO17_Pin},
-    {DIO18_GPIO_Port, DIO18_Pin},
-    {DIO19_GPIO_Port, DIO19_Pin},
-    {DIO20_GPIO_Port, DIO20_Pin},
-    {DIO21_GPIO_Port, DIO21_Pin},
-    {DIO22_GPIO_Port, DIO22_Pin},
-    {DIO23_GPIO_Port, DIO23_Pin},
-    {DIO24_GPIO_Port, DIO24_Pin},
-    {DIO25_GPIO_Port, DIO25_Pin},
-    {DIO26_GPIO_Port, DIO26_Pin},
-    {DIO27_GPIO_Port, DIO27_Pin}
+// Indexed directly by logical DIO channel number (DIO2 .. DIO27).
+// Entries 0, 1, and 8 are unmapped.
+static const PlcDioDesc_t kDioMap[PLC_DIO_MAX_INDEX] = {
+    [0]  = {NULL,           0U,       NULL,   0U,            0U},
+    [1]  = {NULL,           0U,       NULL,   0U,            0U},
+    [2]  = {DIO2_GPIO_Port,  DIO2_Pin,  NULL,   0U,            0U},
+    [3]  = {DIO3_GPIO_Port,  DIO3_Pin,  NULL,   0U,            0U},
+    [4]  = {DIO4_GPIO_Port,  DIO4_Pin,  &htim4, TIM_CHANNEL_1, GPIO_AF2_TIM4},
+    [5]  = {DIO5_GPIO_Port,  DIO5_Pin,  &htim4, TIM_CHANNEL_2, GPIO_AF2_TIM4},
+    [6]  = {DIO6_GPIO_Port,  DIO6_Pin,  &htim4, TIM_CHANNEL_3, GPIO_AF2_TIM4},
+    [7]  = {DIO7_GPIO_Port,  DIO7_Pin,  &htim4, TIM_CHANNEL_4, GPIO_AF2_TIM4},
+    [8]  = {NULL,           0U,       NULL,   0U,            0U},
+    [9]  = {DIO9_GPIO_Port,  DIO9_Pin,  &htim3, TIM_CHANNEL_1, GPIO_AF2_TIM3},
+    [10] = {DIO10_GPIO_Port, DIO10_Pin, &htim3, TIM_CHANNEL_2, GPIO_AF2_TIM3},
+    [11] = {DIO11_GPIO_Port, DIO11_Pin, &htim3, TIM_CHANNEL_3, GPIO_AF2_TIM3},
+    [12] = {DIO12_GPIO_Port, DIO12_Pin, &htim3, TIM_CHANNEL_4, GPIO_AF2_TIM3},
+    [13] = {DIO13_GPIO_Port, DIO13_Pin, NULL,   0U,            0U},
+    [14] = {DIO14_GPIO_Port, DIO14_Pin, NULL,   0U,            0U},
+    [15] = {DIO15_GPIO_Port, DIO15_Pin, NULL,   0U,            0U},
+    [16] = {DIO16_GPIO_Port, DIO16_Pin, NULL,   0U,            0U},
+    [17] = {DIO17_GPIO_Port, DIO17_Pin, NULL,   0U,            0U},
+    [18] = {DIO18_GPIO_Port, DIO18_Pin, NULL,   0U,            0U},
+    [19] = {DIO19_GPIO_Port, DIO19_Pin, NULL,   0U,            0U},
+    [20] = {DIO20_GPIO_Port, DIO20_Pin, NULL,   0U,            0U},
+    [21] = {DIO21_GPIO_Port, DIO21_Pin, NULL,   0U,            0U},
+    [22] = {DIO22_GPIO_Port, DIO22_Pin, NULL,   0U,            0U},
+    [23] = {DIO23_GPIO_Port, DIO23_Pin, NULL,   0U,            0U},
+    [24] = {DIO24_GPIO_Port, DIO24_Pin, NULL,   0U,            0U},
+    [25] = {DIO25_GPIO_Port, DIO25_Pin, NULL,   0U,            0U},
+    [26] = {DIO26_GPIO_Port, DIO26_Pin, NULL,   0U,            0U},
+    [27] = {DIO27_GPIO_Port, DIO27_Pin, NULL,   0U,            0U}
 };
 
-static const PlcPwmChannel_t kPwmChannels[PLC_PWM_COUNT] = {
-    {&htim4, TIM_CHANNEL_1},
-    {&htim4, TIM_CHANNEL_2},
-    {&htim4, TIM_CHANNEL_3},
-    {&htim4, TIM_CHANNEL_4},
-    {&htim3, TIM_CHANNEL_1},
-    {&htim3, TIM_CHANNEL_2},
-    {&htim3, TIM_CHANNEL_3},
-    {&htim3, TIM_CHANNEL_4}
+// Maps logical PWM index (0..7) to its DIO pin when referenced as PWM0..PWM7
+static const uint8_t kPwmIndexToDio[PLC_PWM_COUNT] = {
+    4U, 5U, 6U, 7U, 9U, 10U, 11U, 12U
 };
 
 // Place VM workspace and protocol buffers in zero-wait-state 64 KB CCMRAM
 __attribute__((section(".ccmram"))) static VmInstance_t   g_plc_hal_vm;
 __attribute__((section(".ccmram"))) static ProtInstance_t g_plc_hal_prot;
 
-static Bl24c256aDev_t   g_plc_hal_eeprom;
-static bool             g_plc_hal_eepromReady = false;
-static uint8_t          g_plc_hal_cdcRxBuf[PLC_HAL_CDC_RX_BUF_SIZE];
+static PlcDioMode_t      g_plc_hal_dioMode[PLC_DIO_MAX_INDEX];
+static Bl24c256aDev_t    g_plc_hal_eeprom;
+static bool              g_plc_hal_eepromReady = false;
+static uint8_t           g_plc_hal_cdcRxBuf[PLC_HAL_CDC_RX_BUF_SIZE];
 static volatile uint16_t g_plc_hal_rxHead = 0U;
 static volatile uint16_t g_plc_hal_rxTail = 0U;
 
+static void ensure_dio_mode(uint16_t dioNum, PlcDioMode_t targetMode)
+{
+    if (dioNum >= PLC_DIO_MAX_INDEX || kDioMap[dioNum].p_port == NULL) {
+        return;
+    }
+    if (g_plc_hal_dioMode[dioNum] == targetMode) {
+        return;
+    }
+
+    GPIO_InitTypeDef gpioInit = {0};
+    gpioInit.Pin  = kDioMap[dioNum].pin;
+    gpioInit.Pull = GPIO_NOPULL;
+
+    if (targetMode == DIO_MODE_INPUT) {
+        gpioInit.Mode = GPIO_MODE_INPUT;
+        HAL_GPIO_Init(kDioMap[dioNum].p_port, &gpioInit);
+    } else if (targetMode == DIO_MODE_OUTPUT) {
+        gpioInit.Mode  = GPIO_MODE_OUTPUT_PP;
+        gpioInit.Speed = GPIO_SPEED_FREQ_LOW;
+        HAL_GPIO_Init(kDioMap[dioNum].p_port, &gpioInit);
+    } else if (targetMode == DIO_MODE_PWM && kDioMap[dioNum].p_htim != NULL) {
+        gpioInit.Mode      = GPIO_MODE_AF_PP;
+        gpioInit.Speed     = GPIO_SPEED_FREQ_HIGH;
+        gpioInit.Alternate = kDioMap[dioNum].gpioAf;
+        HAL_GPIO_Init(kDioMap[dioNum].p_port, &gpioInit);
+    }
+
+    g_plc_hal_dioMode[dioNum] = targetMode;
+}
+
 static uint8_t hal_di_read(uint16_t channel)
 {
-    if (channel == 0U || channel == 14U) {
-        return (HAL_GPIO_ReadPin(DIO14_GPIO_Port, DIO14_Pin) == GPIO_PIN_SET) ? 1U : 0U;
+    if (channel >= PLC_DIO_MAX_INDEX || kDioMap[channel].p_port == NULL) {
+        return 0U;
     }
-    return 0U;
+    ensure_dio_mode(channel, DIO_MODE_INPUT);
+    return (HAL_GPIO_ReadPin(kDioMap[channel].p_port, kDioMap[channel].pin) == GPIO_PIN_SET) ? 1U : 0U;
 }
 
 static void hal_do_write(uint16_t channel, uint8_t val)
 {
-    if (channel >= PLC_DIO_OUT_COUNT) {
+    if (channel >= PLC_DIO_MAX_INDEX || kDioMap[channel].p_port == NULL) {
         return;
     }
+    ensure_dio_mode(channel, DIO_MODE_OUTPUT);
     GPIO_PinState state = (val != 0U) ? GPIO_PIN_SET : GPIO_PIN_RESET;
-    HAL_GPIO_WritePin(kDoPins[channel].p_port, kDoPins[channel].pin, state);
+    HAL_GPIO_WritePin(kDioMap[channel].p_port, kDioMap[channel].pin, state);
 }
 
 static int32_t hal_ai_read(uint16_t channel)
@@ -119,16 +166,31 @@ static void hal_ao_write(uint16_t channel, int32_t val)
 
 static uint8_t hal_pwm_set(uint16_t channel, int32_t freq_hz, float dutyPct)
 {
-    (void)freq_hz;
-    if (channel >= PLC_PWM_COUNT) {
+    uint16_t dioNum = channel;
+    if (channel < PLC_PWM_COUNT) {
+        dioNum = kPwmIndexToDio[channel];
+    }
+    if (dioNum >= PLC_DIO_MAX_INDEX || kDioMap[dioNum].p_htim == NULL) {
         return 0U;
     }
+
+    ensure_dio_mode(dioNum, DIO_MODE_PWM);
+
+    TIM_HandleTypeDef *p_htim = kDioMap[dioNum].p_htim;
+    if (freq_hz > 0) {
+        uint32_t arr = (PLC_PWM_TIM_CLK_HZ / (uint32_t)freq_hz);
+        if (arr < 2U)     { arr = 2U; }
+        if (arr > 65536U) { arr = 65536U; }
+        __HAL_TIM_SET_AUTORELOAD(p_htim, arr - 1U);
+    }
+
     float clamped = dutyPct;
     if (clamped < 0.0f)        { clamped = 0.0f; }
     else if (clamped > 100.0f) { clamped = 100.0f; }
 
-    uint32_t compare = (uint32_t)((clamped / 100.0f) * (float)PLC_PWM_MAX_ARR);
-    __HAL_TIM_SET_COMPARE(kPwmChannels[channel].p_htim, kPwmChannels[channel].channel, compare);
+    uint32_t arr     = __HAL_TIM_GET_AUTORELOAD(p_htim);
+    uint32_t compare = (uint32_t)((clamped / 100.0f) * (float)arr);
+    __HAL_TIM_SET_COMPARE(p_htim, kDioMap[dioNum].timChannel, compare);
     return (clamped > 0.0f) ? 1U : 0U;
 }
 
@@ -245,6 +307,8 @@ static void load_saved_program_from_eeprom(void)
 
 bool PLC_HAL_Init(void)
 {
+    memset(g_plc_hal_dioMode, 0, sizeof(g_plc_hal_dioMode));
+
     VmHalVtable_t vtable = {
         .di_read         = hal_di_read,
         .do_write        = hal_do_write,
@@ -310,6 +374,7 @@ void PLC_HAL_PollProtocol(void)
 
     // If an upload just committed successfully, persist the EEPROM header
     if (prevUpload && !g_plc_hal_prot.uploadActive && g_plc_hal_vm.hasValidImage && g_plc_hal_eepromReady) {
+        memset(g_plc_hal_dioMode, 0, sizeof(g_plc_hal_dioMode));
         PlcEepromHeader_t hdr = {
             .magic          = PLC_HAL_EEPROM_MAGIC,
             .imageSizeBytes = g_plc_hal_vm.imageSizeBytes,
