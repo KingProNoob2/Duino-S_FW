@@ -32,6 +32,9 @@ void PLC_HAL_PollProtocol(void);
 // Step all active MaraVM threads according to a 5 ms base tick.
 void PLC_HAL_StepVmTick(uint32_t tick5msCount);
 
+// Return true if Duino - S is booted in Ethernet (LwIP TCP) mode, false for USB CDC mode.
+bool PLC_HAL_IsEthMode(void);
+
 // Reconfigure PLL for 168 MHz SYSCLK and exact 48 MHz USB OTG FS clock.
 void PLC_HAL_ConfigClockUsb168MHz(void);
 

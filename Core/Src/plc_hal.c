@@ -8,6 +8,9 @@
 #include "ds18b20.h"
 #include "hw_tim7.h"
 #include "i2c.h"
+#include "iwdg.h"
+#include "lwip/tcp.h"
+#include "lwip/tcpip.h"
 #include "main.h"
 #include "rng.h"
 #include "rtc.h"
@@ -25,6 +28,9 @@
 #define PLC_PWM_DEFAULT_ARR      999U
 #define PLC_CDC_TX_RETRIES       20U
 #define PLC_DFU_BKP_MAGIC        0xDEADBEEFU
+#define PLC_ETH_BKP_MAGIC        0x45544831U
+#define PLC_ETH_TCP_PORT         5020U
+#define PLC_MODE_HOLD_MS         15000U
 
 typedef enum {
     DIO_MODE_UNCONFIGURED = 0,
@@ -101,6 +107,15 @@ static volatile bool     g_plc_hal_ready = false;
 static uint8_t           g_plc_hal_cdcRxBuf[PLC_HAL_CDC_RX_BUF_SIZE];
 static volatile uint16_t g_plc_hal_rxHead = 0U;
 static volatile uint16_t g_plc_hal_rxTail = 0U;
+static uint32_t          g_plc_hal_modeHoldStartMs = 0U;
+static bool              g_plc_hal_modeHolding = false;
+
+static struct tcp_pcb   *g_plc_hal_listenPcb = NULL;
+static struct tcp_pcb   *g_plc_hal_clientPcb = NULL;
+static osSemaphoreId_t   g_plc_hal_tcpTxSem = NULL;
+static uint8_t           g_plc_hal_tcpTxBuf[PROT_MAX_FRAME_BYTES];
+static uint16_t          g_plc_hal_tcpTxLen = 0U;
+static bool              g_plc_hal_tcpTxOk  = false;
 
 static void ensure_dio_mode(uint16_t dioNum, PlcDioMode_t targetMode)
 {
@@ -361,6 +376,163 @@ static uint64_t hal_retentive_read(uint16_t paramId)
         eeprom_unlock();
     }
     return val;
+}
+
+static err_t tcp_on_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
+{
+    (void)arg;
+    if (p == NULL) {
+        if (g_plc_hal_clientPcb == tpcb) {
+            g_plc_hal_clientPcb = NULL;
+        }
+        tcp_close(tpcb);
+        return ERR_OK;
+    }
+    if (err != ERR_OK) {
+        pbuf_free(p);
+        return err;
+    }
+    for (struct pbuf *q = p; q != NULL; q = q->next) {
+        PLC_HAL_CdcRxPush((const uint8_t *)q->payload, q->len);
+    }
+    tcp_recved(tpcb, p->tot_len);
+    pbuf_free(p);
+    return ERR_OK;
+}
+
+static void tcp_on_err(void *arg, err_t err)
+{
+    (void)arg;
+    (void)err;
+    g_plc_hal_clientPcb = NULL;
+}
+
+static err_t tcp_on_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
+{
+    (void)arg;
+    if (err != ERR_OK || newpcb == NULL) {
+        return ERR_VAL;
+    }
+    if (g_plc_hal_clientPcb != NULL) {
+        tcp_abort(g_plc_hal_clientPcb);
+        g_plc_hal_clientPcb = NULL;
+    }
+    g_plc_hal_clientPcb = newpcb;
+    tcp_nagle_disable(newpcb);
+    tcp_recv(newpcb, tcp_on_recv);
+    tcp_err(newpcb, tcp_on_err);
+    return ERR_OK;
+}
+
+static void tcp_server_init_cb(void *arg)
+{
+    (void)arg;
+    struct tcp_pcb *pcb = tcp_new();
+    if (pcb == NULL) {
+        return;
+    }
+    if (tcp_bind(pcb, IP_ADDR_ANY, PLC_ETH_TCP_PORT) != ERR_OK) {
+        tcp_close(pcb);
+        return;
+    }
+    g_plc_hal_listenPcb = tcp_listen(pcb);
+    if (g_plc_hal_listenPcb != NULL) {
+        tcp_accept(g_plc_hal_listenPcb, tcp_on_accept);
+    }
+}
+
+static void tcp_tx_cb(void *arg)
+{
+    (void)arg;
+    g_plc_hal_tcpTxOk = false;
+    if (g_plc_hal_clientPcb != NULL && g_plc_hal_tcpTxLen > 0U) {
+        if (tcp_write(g_plc_hal_clientPcb, g_plc_hal_tcpTxBuf, g_plc_hal_tcpTxLen, TCP_WRITE_FLAG_COPY) == ERR_OK) {
+            tcp_output(g_plc_hal_clientPcb);
+            g_plc_hal_tcpTxOk = true;
+        }
+    }
+    if (g_plc_hal_tcpTxSem != NULL) {
+        osSemaphoreRelease(g_plc_hal_tcpTxSem);
+    }
+}
+
+static bool tcp_tx_send(const uint8_t *p_data, uint16_t lenBytes)
+{
+    if (p_data == NULL || lenBytes == 0U || lenBytes > PROT_MAX_FRAME_BYTES || g_plc_hal_clientPcb == NULL) {
+        return false;
+    }
+    memcpy(g_plc_hal_tcpTxBuf, p_data, lenBytes);
+    g_plc_hal_tcpTxLen = lenBytes;
+    g_plc_hal_tcpTxOk  = false;
+    if (tcpip_callback(tcp_tx_cb, NULL) != ERR_OK) {
+        return false;
+    }
+    if (g_plc_hal_tcpTxSem != NULL) {
+        osSemaphoreAcquire(g_plc_hal_tcpTxSem, 200U);
+    }
+    return g_plc_hal_tcpTxOk;
+}
+
+static void delay_with_iwdg_ms(uint32_t totalMs)
+{
+    uint32_t elapsed = 0U;
+    while (elapsed < totalMs) {
+        HAL_IWDG_Refresh(&hiwdg);
+        uint32_t step = (totalMs - elapsed > 50U) ? 50U : (totalMs - elapsed);
+        osDelay(step);
+        elapsed += step;
+    }
+}
+
+static void poll_comm_mode_switch(void)
+{
+    // Do not hijack DI14/DI15 if user logic explicitly uses either as an output/peripheral
+    if (g_plc_hal_dioMode[14] > DIO_MODE_INPUT || g_plc_hal_dioMode[15] > DIO_MODE_INPUT) {
+        g_plc_hal_modeHolding = false;
+        return;
+    }
+
+    uint8_t di14 = hal_di_read(14U);
+    uint8_t di15 = hal_di_read(15U);
+    if (di14 != 0U && di15 != 0U) {
+        uint32_t nowMs = HAL_GetTick();
+        if (!g_plc_hal_modeHolding) {
+            g_plc_hal_modeHolding     = true;
+            g_plc_hal_modeHoldStartMs = nowMs;
+        } else if ((nowMs - g_plc_hal_modeHoldStartMs) >= PLC_MODE_HOLD_MS) {
+            bool switchToEth = !PLC_HAL_IsEthMode();
+            VM_SetState(&g_plc_hal_vm, VM_STATE_STOPPED);
+
+            HAL_PWR_EnableBkUpAccess();
+            RTC->BKP2R = switchToEth ? PLC_ETH_BKP_MAGIC : 0U;
+            __DSB();
+
+            if (switchToEth) {
+                // DO16 ON for 1s to indicate Ethernet (ETH) mode
+                hal_do_write(16U, 1U);
+                delay_with_iwdg_ms(1000U);
+                hal_do_write(16U, 0U);
+            } else {
+                // DO18 2 pulses over 1s to indicate USB mode
+                for (uint8_t p = 0U; p < 2U; p++) {
+                    hal_do_write(18U, 1U);
+                    delay_with_iwdg_ms(250U);
+                    hal_do_write(18U, 0U);
+                    delay_with_iwdg_ms(250U);
+                }
+            }
+            NVIC_SystemReset();
+        }
+    } else {
+        g_plc_hal_modeHolding = false;
+    }
+}
+
+bool PLC_HAL_IsEthMode(void)
+{
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+    return (RTC->BKP2R == PLC_ETH_BKP_MAGIC);
 }
 
 static bool cdc_tx_send(const uint8_t *p_data, uint16_t lenBytes)
@@ -652,13 +824,19 @@ bool PLC_HAL_Init(void)
         load_saved_program_from_eeprom();
     }
 
+    bool ethMode = PLC_HAL_IsEthMode();
+    if (ethMode) {
+        g_plc_hal_tcpTxSem = osSemaphoreNew(1U, 0U, NULL);
+        tcpip_callback(tcp_server_init_cb, NULL);
+    }
+
     ProtTransport_t transport = {
-        .kind          = PROT_TRANSPORT_USB_CDC,
+        .kind          = ethMode ? PROT_TRANSPORT_TCP_IP : PROT_TRANSPORT_USB_CDC,
         .maxMtuBytes   = 512U,
         .modelId       = PLC_HAL_MODEL_ID,
         .fwVersion     = PLC_HAL_FW_VERSION,
         .stationId     = PROT_STATION_P2P,
-        .tx_send       = cdc_tx_send,
+        .tx_send       = ethMode ? tcp_tx_send : cdc_tx_send,
         .get_uptime_ms = HAL_GetTick,
         .storage_write = eeprom_storage_write,
         .storage_read  = eeprom_storage_read,
@@ -689,6 +867,8 @@ void PLC_HAL_CdcRxPush(const uint8_t *p_data, uint32_t lenBytes)
 
 void PLC_HAL_PollProtocol(void)
 {
+    poll_comm_mode_switch();
+
     bool prevUpload = g_plc_hal_prot.uploadActive;
 
     while (g_plc_hal_rxTail != g_plc_hal_rxHead) {

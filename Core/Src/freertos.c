@@ -121,11 +121,12 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-  /* init code for USB_DEVICE */
-  MX_USB_DEVICE_Init();
-
-  /* init code for LWIP (disabled while running 168 MHz USB CDC mode) */
-  /* MX_LWIP_Init(); */
+  /* init code for USB_DEVICE or LWIP depending on persisted mode */
+  if (PLC_HAL_IsEthMode()) {
+    MX_LWIP_Init();
+  } else {
+    MX_USB_DEVICE_Init();
+  }
   /* USER CODE BEGIN StartDefaultTask */
   PLC_HAL_Init();
 

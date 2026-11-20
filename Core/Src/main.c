@@ -97,8 +97,10 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-  // Switch PLL to 168 MHz (48 MHz exact USB clock) for USB CDC mode
-  PLC_HAL_ConfigClockUsb168MHz();
+  // Switch PLL to 168 MHz (48 MHz exact USB clock) only in USB CDC mode; ETH mode keeps 150 MHz + 50 MHz MCO1
+  if (!PLC_HAL_IsEthMode()) {
+    PLC_HAL_ConfigClockUsb168MHz();
+  }
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
