@@ -44,12 +44,12 @@ static void send_gratuitous_arp_cb(void *arg)
 static void init_mdns_netbios_cb(void *arg)
 {
   struct netif *netif = (struct netif *)arg;
-  netif_set_hostname(netif, "f407plc");
+  netif_set_hostname(netif, "duinos");
   netbiosns_init();
-  netbiosns_set_name("F407PLC");
+  netbiosns_set_name("DUINOS");
   mdns_resp_init();
-  mdns_resp_add_netif(netif, "f407plc", 255);
-  mdns_resp_add_service(netif, "F407PLC", "_maraprot", DNSSD_PROTO_TCP, 5020, 255, NULL, NULL);
+  mdns_resp_add_netif(netif, "duinos", 255);
+  mdns_resp_add_service(netif, "duinos", "_maraprot", DNSSD_PROTO_TCP, 5020, 255, NULL, NULL);
 }
 /* USER CODE END 0 */
 /* Private function prototypes -----------------------------------------------*/

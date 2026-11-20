@@ -332,6 +332,10 @@ static void low_level_init(struct netif *netif)
 #endif /* LWIP_ARP || LWIP_ETHERNET */
 
 /* USER CODE BEGIN LOW_LEVEL_INIT */
+  /* Restrict Auto-Negotiation to 10BASE-T (Full/Half) for 50 MHz MCO1 stability */
+  ETH_PHY_IO_WriteReg(DP83848.DevAddr, 0x04U, 0x0061U);
+  ETH_PHY_IO_WriteReg(DP83848.DevAddr, 0x00U, 0x1200U);
+
   netif->flags |= NETIF_FLAG_IGMP;
   {
     ETH_MACFilterConfigTypeDef filterCfg = {0};
