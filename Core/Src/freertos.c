@@ -26,18 +26,12 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "iwdg.h"
-#include "tim.h"
-#include "dac.h"
-#include "usart.h"
-#include "lwip.h"
+#include "plc_hal.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef struct {
-  GPIO_TypeDef *port;
-  uint16_t pin;
-} DioPin_t;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -52,29 +46,12 @@ typedef struct {
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-extern volatile uint16_t plc_adc_raw[4];
-extern struct netif gnetif;
-
-/* All 17 non-PWM GPIO DIO outputs in logical order */
-static const DioPin_t kDioOutputs[] = {
-  {DIO2_GPIO_Port,  DIO2_Pin},
-  {DIO3_GPIO_Port,  DIO3_Pin},
-  {DIO13_GPIO_Port, DIO13_Pin},
-  {DIO15_GPIO_Port, DIO15_Pin},
-  {DIO16_GPIO_Port, DIO16_Pin},
-  {DIO17_GPIO_Port, DIO17_Pin},
-  {DIO18_GPIO_Port, DIO18_Pin},
-  {DIO19_GPIO_Port, DIO19_Pin},
-  {DIO20_GPIO_Port, DIO20_Pin},
-  {DIO21_GPIO_Port, DIO21_Pin},
-  {DIO22_GPIO_Port, DIO22_Pin},
-  {DIO23_GPIO_Port, DIO23_Pin},
-  {DIO24_GPIO_Port, DIO24_Pin},
-  {DIO25_GPIO_Port, DIO25_Pin},
-  {DIO26_GPIO_Port, DIO26_Pin},
-  {DIO27_GPIO_Port, DIO27_Pin},
+static osThreadId_t g_freertos_vmTaskHandle;
+static const osThreadAttr_t kVmTaskAttr = {
+  .name       = "vmScanTask",
+  .stack_size = 1024U * 4U,
+  .priority   = (osPriority_t) osPriorityAboveNormal,
 };
-#define DIO_OUTPUT_COUNT (sizeof(kDioOutputs) / sizeof(kDioOutputs[0]))
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -86,7 +63,7 @@ const osThreadAttr_t defaultTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+static void vm_scan_task(void *p_argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -125,8 +102,8 @@ void MX_FREERTOS_Init(void) {
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+    /* USER CODE BEGIN RTOS_THREADS */
+  g_freertos_vmTaskHandle = osThreadNew(vm_scan_task, NULL, &kVmTaskAttr);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -144,72 +121,36 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-  /* init code for USB_DEVICE (disabled while testing ETH at 150 MHz / 50 MHz MCO1) */
-  /* MX_USB_DEVICE_Init(); */
+  /* init code for USB_DEVICE */
+  MX_USB_DEVICE_Init();
 
-  /* init code for LWIP */
-  MX_LWIP_Init();
+  /* init code for LWIP (disabled while running 168 MHz USB CDC mode) */
+  /* MX_LWIP_Init(); */
   /* USER CODE BEGIN StartDefaultTask */
-  uint32_t step = 0;
-  uart3_printf("\r\n=== F407PLC boot | IP=192.168.1.100 ===\r\n");
+  PLC_HAL_Init();
 
-  /* Infinite loop: board bring-up test pattern */
-  for(;;)
-  {
+  for (;;) {
     HAL_IWDG_Refresh(&hiwdg);
-
-    /* 1. Walking-1 chaser across all 17 GPIO DIO outputs + all-ON/all-OFF flash */
-    uint32_t phase = step % (DIO_OUTPUT_COUNT + 2);
-    for (uint32_t i = 0; i < DIO_OUTPUT_COUNT; i++)
-    {
-      GPIO_PinState state;
-      if (phase < DIO_OUTPUT_COUNT) {
-        state = (i == phase) ? GPIO_PIN_SET : GPIO_PIN_RESET;
-      } else if (phase == DIO_OUTPUT_COUNT) {
-        state = GPIO_PIN_SET;   /* brief all-HIGH flash */
-      } else {
-        state = GPIO_PIN_RESET; /* brief all-LOW gap */
-      }
-      HAL_GPIO_WritePin(kDioOutputs[i].port, kDioOutputs[i].pin, state);
-    }
-
-    /* 2. Breathing triangle-wave PWM on all 8 PWM pins (TIM3: DIO9-12, TIM4: DIO4-7) */
-    uint32_t tri = (step * 50) % 2000;
-    uint32_t base_duty = (tri < 1000) ? tri : (1999 - tri); /* 0..999 */
-
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, (base_duty + 0)   % 1000); /* DIO4 */
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, (base_duty + 125) % 1000); /* DIO5 */
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_3, (base_duty + 250) % 1000); /* DIO6 */
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, (base_duty + 375) % 1000); /* DIO7 */
-
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, (base_duty + 500) % 1000); /* DIO9 */
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, (base_duty + 625) % 1000); /* DIO10 */
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, (base_duty + 750) % 1000); /* DIO11 */
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_4, (base_duty + 875) % 1000); /* DIO12 */
-
-    /* 3. Complementary ramp on DAC1 (PA4) & DAC2 (PA5) */
-    uint32_t dac1 = (base_duty * 4095) / 999;
-    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac1);
-    HAL_DAC_SetValue(&hdac, DAC_CHANNEL_2, DAC_ALIGN_12B_R, 4095 - dac1);
-
-    /* 4. Once per second, print heartbeat + ADC + ETH link status over USART3 */
-    if ((step % 10) == 0)
-    {
-      uart3_printf("tick=%lu | link=%s | ADC=[%u, %u, %u, %u]\r\n",
-                   (unsigned long)osKernelGetTickCount(),
-                   netif_is_link_up(&gnetif) ? "UP" : "DOWN",
-                   plc_adc_raw[0], plc_adc_raw[1],
-                   plc_adc_raw[2], plc_adc_raw[3]);
-    }
-
-    step++;
-    osDelay(100);
+    PLC_HAL_PollProtocol();
+    osDelay(1);
   }
   /* USER CODE END StartDefaultTask */
 }
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+static void vm_scan_task(void *p_argument)
+{
+  (void)p_argument;
+  uint32_t tick5msCount = 0U;
+  uint32_t lastWake_ms  = osKernelGetTickCount();
 
+  for (;;) {
+    PLC_HAL_StepVmTick(tick5msCount);
+    tick5msCount++;
+    lastWake_ms += 5U;
+    osDelayUntil(lastWake_ms);
+  }
+}
 /* USER CODE END Application */
 

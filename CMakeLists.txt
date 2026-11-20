@@ -47,6 +47,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/bl24c256a.c
     Core/Src/mara_vm.c
     Core/Src/mara_prot.c
+    Core/Src/plc_hal.c
 )
 
 # Add include paths
